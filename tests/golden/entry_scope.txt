@@ -1,0 +1,3 @@
+global-leak undefined
+module object function true
+paths true true

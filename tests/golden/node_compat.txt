@@ -1,0 +1,8 @@
+stream function true function
+mixin 7
+sites true true string
+paths string true true
+buffer 4 true -1
+qs a=1&b=x%20y
+decoder "é"
+fsstream true true

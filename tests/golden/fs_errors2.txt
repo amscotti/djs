@@ -1,0 +1,2 @@
+dir EISDIR read
+full ENOSPC write

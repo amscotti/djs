@@ -1,0 +1,104 @@
+:root {
+    --bg: #f6f7fb;
+    --panel: #ffffff;
+    --ink: #16181d;
+    --muted: #6b7280;
+    --accent: #4f46e5;
+    --ok: #059669;
+    --line: #e5e7eb;
+}
+
+body.dark {
+    --bg: #0f1117;
+    --panel: #171a22;
+    --ink: #e8eaf0;
+    --muted: #9aa3b2;
+    --accent: #818cf8;
+    --ok: #34d399;
+    --line: #262b36;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 32px;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    max-width: 680px;
+    margin: 0 auto 28px;
+}
+
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.header-right { display: flex; align-items: center; gap: 10px; }
+
+main { max-width: 680px; margin: 0 auto; }
+
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 16px 0;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 5%);
+}
+
+.row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.row strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.row span { color: var(--muted); }
+
+.bar { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.fill { height: 100%; background: var(--accent); transition: width 300ms ease; }
+.fill.done { background: var(--ok); }
+
+ul { margin: 16px 0 4px; padding-left: 20px; color: var(--muted); }
+li { margin: 3px 0; }
+li.current { color: var(--ink); font-weight: 600; }
+.ok { color: var(--ok); font-weight: 600; margin: 12px 0 0; }
+.muted { color: var(--muted); }
+.meta { font-size: 13px; }
+
+button {
+    background: var(--accent);
+    color: #fff;
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+button.ghost {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--line);
+    padding: 6px 12px;
+    font-weight: 500;
+}
+
+button:disabled { opacity: 0.5; cursor: default; }
+
+.pill {
+    font-size: 12px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 2px 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.controls { display: flex; align-items: center; gap: 12px; }
+
+.htmx-indicator { opacity: 0; transition: opacity 150ms ease; }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }

@@ -1,0 +1,5 @@
+exec true "hi"
+fail 3 "out" "err" null
+max ERR_CHILD_PROCESS_STDIO_MAXBUFFER
+timeout ETIMEDOUT true
+buffer true bytes

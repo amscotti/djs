@@ -1,0 +1,17 @@
+numbers 1234feffffff
+bigint 12345678901234567890 -42
+variable 563412fffc18cdef 1193046 -1000
+copy 5 23456
+indexOf 3 6 5 5
+includes true false
+fill ababab
+fill-pattern xyxyx
+json {"type":"Buffer","data":[1,2,255]}
+swap16 02010403
+swap32 0403020108070605
+swap64 0807060504030201
+base64url aGVsbG8_fg hello?~
+isEncoding true true false
+copy-semantics abc
+range RangeError:ERR_OUT_OF_RANGE
+toJSON-deep ok

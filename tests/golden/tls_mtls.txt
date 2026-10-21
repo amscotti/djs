@@ -1,0 +1,3 @@
+server-authorized true
+client-secure true
+body mtls-ok

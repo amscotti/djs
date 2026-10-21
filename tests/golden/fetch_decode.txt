@@ -1,0 +1,4 @@
+brotli true
+gzip true
+br true
+plain true

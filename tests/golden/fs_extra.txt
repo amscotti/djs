@@ -1,0 +1,14 @@
+read one true
+copy one
+excl EEXIST
+rename one
+realpath true
+latin 1 233
+rm-nodir EISDIR
+self-copy one
+write-mode 600
+copy-mode 600
+hex 68656c6c6f aGVsbG8=
+latin 233
+mkdir-file EEXIST
+gone ENOENT

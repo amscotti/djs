@@ -1,0 +1,2 @@
+message echo:hi
+close 1000

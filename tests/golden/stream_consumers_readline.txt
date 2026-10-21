@@ -1,0 +1,4 @@
+text hello
+json 1
+buffer 3
+readline answer

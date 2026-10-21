@@ -1,0 +1,4 @@
+pipeline ABC
+finished ok
+reject boom
+finished-reject sink failed

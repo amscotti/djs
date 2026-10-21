@@ -1,0 +1,8 @@
+{
+  "name": "djs-hono-progress-app",
+  "private": true,
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": { "start": "djs -A server.js" },
+  "dependencies": { "hono": "^4.7.0" }
+}

@@ -1,0 +1,56 @@
+global: true
+versions.node: true
+versions.djs: true
+versions.node-format: true
+release.name: djs
+features.tls: true
+emitWarning: DeprecationWarning/DEP0001/careful
+inspect.custom: symbol
+inspect custom output: custom!
+types.isProxy: true/false
+isDeepStrictEqual: true
+isDeepStrictEqual diff: false
+getSystemErrorName: ENOENT/EACCES
+stripVT: red
+debuglog: function
+events.on: function
+getEventListeners: true
+errorMonitor: true
+captureRejections: true
+http2.constants: :status :method 7
+os.EOL: "\n"
+path.win32.join: C:\a\c
+path.win32.basename: b
+path.win32.dirname: C:\a
+path.win32.sep: \
+path.toNamespacedPath: true
+url.urlToHttpOptions: example.test|8443|/a?b=1|user:pw
+zlib.crc32: cbf43926
+fs.Dirent: true
+dirents: file.txt,subdir/
+stat instanceof: true
+http.Agent: true
+http.globalAgent: true
+https.globalAgent: https:
+STATUS_CODES: Not Found/Internal Server Error
+METHODS: true
+maxHeaderSize: true
+validateHeaderName: ERR_INVALID_HTTP_TOKEN
+path.parse: {"root":"/","dir":"/a","base":"b.txt","ext":".txt","name":"b"}
+path.format: /a/b.txt
+fs.mkdtempSync: true
+fs.accessSync missing: ENOENT
+stdout.hasColors force: false
+stdout.hasColors off: false
+readline.cursorTo: function
+process.exitCode: 3
+agent used: true
+response body: ok
+set-cookie array: ["a=1","b=2"]
+require.main: true
+require.cache: true
+module.parent: null
+module.children: true
+nested type shadow: ERR_REQUIRE_ESM
+nested main shadow: index.js
+done: ok

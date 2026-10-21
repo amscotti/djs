@@ -1,0 +1,5 @@
+watch true
+cp a b
+vec 4 4 a bcd
+blob 1 text/plain
+cp-promise true

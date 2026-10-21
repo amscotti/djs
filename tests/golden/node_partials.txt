@@ -1,0 +1,12 @@
+hrtime true true true
+uptime true true
+loadavg true number
+ifaces true true
+userinfo string
+statfs true true true
+kill true
+cpuusage true true
+umask true true
+dgram-options true
+perfhooks function true
+osconst true true

@@ -1,0 +1,8 @@
+caught same-turn
+unhandledRejection late true
+unhandledRejection never true
+unhandledRejection in-listener true
+caught in listener
+rejectionHandled true
+caught late
+rejectionHandled true

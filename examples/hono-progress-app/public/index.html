@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>djs progress demo</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/app.css">
+    <script src="/vendor/htmx.min.js" defer></script>
+    <script src="/vendor/alpine.min.js" defer></script>
+</head>
+<body x-data="{ dark: false, swaps: 0, started: new Date().toLocaleTimeString() }"
+      :class="{ dark: dark }"
+      x-init="window.addEventListener('htmx:afterSwap', function () { swaps++ })">
+    <header>
+        <h1>djs · HTMX · Alpine</h1>
+        <div class="header-right">
+            <span class="pill" x-text="dark ? 'dark' : 'light'"></span>
+            <button type="button" class="ghost" @click="dark = !dark">Toggle theme</button>
+        </div>
+    </header>
+
+    <main>
+        <section class="controls">
+            <button type="button" hx-post="/start" hx-target="#job" hx-swap="outerHTML" hx-indicator="#spin">
+                Start job
+            </button>
+            <span id="spin" class="htmx-indicator muted">working…</span>
+        </section>
+
+        <div id="job" class="panel" hx-get="/progress" hx-trigger="load, every 400ms" hx-swap="outerHTML">
+            <p class="muted">Loading…</p>
+        </div>
+
+        <p class="muted meta">
+            fragments rendered: <strong x-text="swaps"></strong>
+            · page opened <span x-text="started"></span>
+        </p>
+    </main>
+</body>
+</html>

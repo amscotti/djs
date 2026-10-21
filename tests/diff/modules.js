@@ -1,0 +1,13 @@
+const { EventEmitter } = require("events");
+const { URL } = require("url");
+const util = require("util");
+const e = new EventEmitter();
+let n = 0;
+e.on("a", v => { n += v; });
+e.once("a", v => { n += v * 10; });
+e.emit("a", 2); e.emit("a", 3);
+console.log("events", n, e.listenerCount("a"));
+const u = new URL("https://user:p@example.com:8080/a?x=1#h");
+u.searchParams.append("y", "2");
+console.log("url", u.protocol, u.hostname, u.port, u.pathname, u.search, u.href, u.origin);
+console.log("util", util.format("%s=%d", "a", 5), util.inspect({ a: [1] }));

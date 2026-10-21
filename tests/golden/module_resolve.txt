@@ -1,0 +1,9 @@
+builtin fs node:fs
+js module_value.js true
+json data.json
+scoped module_value.js fs
+entry-module object .
+missing MODULE_NOT_FOUND
+create-path module_value.js
+create-url module_value.js
+require 42

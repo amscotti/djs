@@ -1,0 +1,7 @@
+toWeb abc
+fromWeb xy
+objectMode 1,2
+toWebWritable hello
+fromWebWritable abcd
+abort AbortError ABORT_ERR
+duplex function function

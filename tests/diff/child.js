@@ -1,0 +1,21 @@
+process.noDeprecation = true;
+const cp = require("child_process");
+let r = cp.spawnSync("sh", ["-c", "printf out; printf err >&2; exit 3"]);
+console.log("sync", r.status, r.stdout.toString(), r.stderr.toString());
+r = cp.spawnSync("sh", ["-c", "pwd"], { cwd: "/tmp" });
+console.log("cwd", r.stdout.toString().trim());
+r = cp.execSync("printf exec");
+console.log("exec", r.toString());
+r = cp.spawnSync("printf", ["%s", "shell"], { shell: true });
+console.log("shell", r.status, r.stdout.toString());
+r = cp.spawnSync("cat", [], { input: "x".repeat(262144) });
+console.log("input", r.status, r.stdout.length);
+r = cp.spawnSync("sh", ["-c", "echo A; head -c 200000 /dev/zero >&2; echo B"]);
+console.log("interleaved", r.status, r.stdout.length, r.stderr.length);
+const child = cp.spawn("sh", ["-c", "echo one; echo two >&2"]);
+let out = "", err = "";
+child.stdout.on("data", c => { out += c; });
+child.stderr.on("data", c => { err += c; });
+child.on("close", (code, sig) => {
+    console.log("spawn", code, sig, out.trim(), err.trim());
+});

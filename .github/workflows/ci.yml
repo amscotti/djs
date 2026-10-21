@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            ldc dub \
+            libuv1-dev libssl-dev libbrotli-dev
+
+      - name: Cache the pinned QuickJS build
+        uses: actions/cache@v4
+        with:
+          path: vendor/quickjs-ng
+          key: qjs-${{ runner.os }}-${{ hashFiles('scripts/patches/quickjs-array-buffer-accounting.patch') }}
+
+      - name: Bootstrap
+        run: ./scripts/bootstrap.sh
+
+      - name: Build (release)
+        run: dub build -b release --compiler=ldc2
+
+      - name: Integration tests
+        run: ./scripts/integration.sh
+
+      - name: Gate
+        run: ./scripts/gate.sh

@@ -1,0 +1,8 @@
+keepalive-1 200 ok:GET:/a:0 keep-alive
+keepalive-2 200 ok:GET:/b:0 keep-alive
+pipelined ok:GET:/p1:0 ok:GET:/p2:0
+chunked 200 ok:POST:/chunk:11
+continue 100 
+expect-body 200 ok:POST:/expect:3
+head true true true
+header-timeout true

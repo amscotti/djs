@@ -1,0 +1,3 @@
+server-stream GET /x
+client-response 200 text/plain
+client-body hello

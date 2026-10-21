@@ -1,0 +1,6 @@
+vm-this 3
+vm-new 10
+vm-isolated undefined
+vm-script {"x":5}
+vm-throw undefined true
+vm-syntax ERR_VM_SCRIPT

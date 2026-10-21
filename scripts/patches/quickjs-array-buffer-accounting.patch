@@ -1,0 +1,94 @@
+diff --git a/quickjs.c b/quickjs.c
+index 6ca030b..95e0069 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -339,6 +339,7 @@ struct JSRuntime {
+     JSMallocState malloc_state;
+     JSArenaState arena_state;
+     const char *rt_info;
++    size_t array_buffer_bytes; /* live ArrayBuffer backing bytes */
+ 
+     int atom_hash_size; /* power of two */
+     int atom_count;
+@@ -7576,6 +7577,11 @@ static void compute_value_size(JSValue val, JSMemoryUsage_helper *hp)
+     }
+ }
+ 
++size_t JS_GetArrayBufferBytes(JSContext *ctx)
++{
++    return ctx->rt->array_buffer_bytes;
++}
++
+ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
+ {
+     struct list_head *el, *el1;
+@@ -59142,6 +59148,7 @@ static JSValue js_array_buffer_constructor3(JSContext *ctx,
+     if (!abuf)
+         goto fail;
+     abuf->byte_length = len;
++    rt->array_buffer_bytes += len;
+     abuf->max_byte_length = max_len ? *max_len : -1;
+     if (alloc_flag) {
+         if (class_id == JS_CLASS_SHARED_ARRAY_BUFFER &&
+@@ -59185,6 +59192,8 @@ static JSValue js_array_buffer_constructor3(JSContext *ctx,
+     JS_SetOpaqueInternal(obj, abuf);
+     return obj;
+  fail:
++    if (abuf)
++        rt->array_buffer_bytes -= len;
+     JS_FreeValue(ctx, obj);
+     js_free(ctx, abuf);
+     return JS_EXCEPTION;
+@@ -59306,6 +59315,8 @@ static void js_array_buffer_finalizer(JSRuntime *rt, JSValueConst val)
+     struct list_head *el, *el1;
+ 
+     if (abuf) {
++        if (abuf->byte_length > 0)
++            rt->array_buffer_bytes -= abuf->byte_length;
+         /* The ArrayBuffer finalizer may be called before the typed
+            array finalizers using it, so abuf->array_list is not
+            necessarily empty. */
+@@ -59436,6 +59447,7 @@ void JS_DetachArrayBuffer(JSContext *ctx, JSValueConst obj)
+         abuf->opaque = NULL;
+     }
+     abuf->data = NULL;
++    ctx->rt->array_buffer_bytes -= abuf->byte_length;
+     abuf->byte_length = 0;
+     abuf->detached = true;
+ 
+@@ -59615,6 +59627,7 @@ static JSValue js_array_buffer_transfer(JSContext *ctx, JSValueConst this_val,
+             memset(bs + old_len, 0, new_len - old_len);
+     }
+     /* neuter the source */
++    ctx->rt->array_buffer_bytes -= abuf->byte_length;
+     abuf->data = NULL;
+     abuf->byte_length = 0;
+     abuf->detached = true;
+@@ -59672,6 +59685,7 @@ static JSValue js_array_buffer_resize(JSContext *ctx, JSValueConst this_val,
+         // throw a TypeError in thread B as the spec says we should,
+         // instead both threads get their own view of the backing memory,
+         // 2 bytes big in A, and 1 byte big in B
++        ctx->rt->array_buffer_bytes += len - abuf->byte_length;
+         abuf->byte_length = len;
+     } else {
+         // the ArrayBuffer cannot be resizable without a way to resize it,
+@@ -59683,6 +59697,7 @@ static JSValue js_array_buffer_resize(JSContext *ctx, JSValueConst this_val,
+             return JS_ThrowOutOfMemory(ctx);
+         if (len > abuf->byte_length)
+             memset(&data[abuf->byte_length], 0, len - abuf->byte_length);
++        ctx->rt->array_buffer_bytes += len - abuf->byte_length;
+         abuf->byte_length = len;
+         abuf->data = data;
+     }
+diff --git a/quickjs.h b/quickjs.h
+index b5e5576..f0d1a60 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -604,6 +604,7 @@ typedef struct JSMemoryUsage {
+ } JSMemoryUsage;
+ 
+ JS_EXTERN void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s);
++JS_EXTERN size_t JS_GetArrayBufferBytes(JSContext *ctx);
+ JS_EXTERN void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt);
+ 
+ /* atom support */

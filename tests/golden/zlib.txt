@@ -1,0 +1,9 @@
+gzip 1f 8b true
+gunzip true
+deflate true
+raw true
+empty 0
+truncated Z_BUF_ERROR
+binary true
+stream-packed true
+stream-roundtrip true

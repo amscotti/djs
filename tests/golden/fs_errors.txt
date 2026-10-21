@@ -1,0 +1,2 @@
+sync ENOENT open
+async ENOENT

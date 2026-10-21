@@ -1,0 +1,2 @@
+watch-type function function
+watch rename a.txt

@@ -1,0 +1,7 @@
+bad-address ERR_INVALID_ARG_VALUE
+bad-port ERR_SOCKET_BAD_PORT
+bad-type ERR_INVALID_ARG_VALUE
+promise-bad ERR_INVALID_ARG_VALUE
+v4 null localhost 0
+v6 null localhost 0
+promise localhost ssh

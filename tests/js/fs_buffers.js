@@ -1,0 +1,10 @@
+const ab = new ArrayBuffer(4);
+new Uint8Array(ab).set([1, 2, 3, 4]);
+fs.writeFileSync("tests/tmp/ab.bin", ab);
+console.log("ab", Array.from(fs.readFileSync("tests/tmp/ab.bin")).join(","));
+const u8 = new Uint8Array([9, 8, 7, 6]);
+fs.writeFileSync("tests/tmp/sub.bin", u8.subarray(1, 3));
+console.log("sub", Array.from(fs.readFileSync("tests/tmp/sub.bin")).join(","));
+const dv = new DataView(ab, 1, 2);
+fs.writeFileSync("tests/tmp/dv.bin", dv);
+console.log("dv", Array.from(fs.readFileSync("tests/tmp/dv.bin")).join(","));

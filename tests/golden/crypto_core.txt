@@ -1,0 +1,11 @@
+rsa true true
+ec true
+export true
+der true
+streaming true true
+x509 /CN=example.test true
+x509-fingerprint true
+x509-host example.test undefined
+x509-dates true true
+hkdf true 32 true
+async-keypair true string

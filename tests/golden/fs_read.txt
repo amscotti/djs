@@ -1,0 +1,4 @@
+sync:hello from djs
+bytes:true
+cb:hello from djs
+promise:hello from djs

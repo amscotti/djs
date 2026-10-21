@@ -1,0 +1,8 @@
+{
+  "name": "djs-deepseek-chat",
+  "private": true,
+  "version": "1.0.0",
+  "main": "chat.js",
+  "scripts": { "start": "djs -A chat.js" },
+  "dependencies": { "openai": "^6.0.0" }
+}

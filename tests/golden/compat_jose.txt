@@ -1,0 +1,2 @@
+hs256 user-1 3
+rs256 admin 3

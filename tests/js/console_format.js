@@ -1,0 +1,12 @@
+const obj = { a: 1, b: "x" };
+const arr = [1, 2, 3];
+console.log(obj);
+console.log(arr);
+console.log({ a: { b: { c: 1 } } });
+console.log("%s %d %i %f %%", "str", 2.5, "3.9", "4.2");
+console.log("%j", { a: 1 });
+const circ = {};
+circ.self = circ;
+console.log(circ);
+console.log("multi", "args", 1);
+console.log();

@@ -1,0 +1,6 @@
+https: example.com 8080 /a/b two x=1&y=two&z=3
+https://user:p@example.com:8080/a/b?x=1&y=two&z=3#h https://example.com:8080
+example.com /a 1 http://example.com/b
+n:4 { a: 1 }
+inherits base
+promisify 5

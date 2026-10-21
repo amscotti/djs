@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: build linux-x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            ldc dub \
+            libuv1-dev libssl-dev libbrotli-dev
+
+      - name: Check tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="v$(tr -d '[:space:]' < VERSION)"
+          if [ "$want" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match VERSION $want" >&2
+            exit 1
+          fi
+
+      - name: Cache the pinned QuickJS build
+        uses: actions/cache@v4
+        with:
+          path: vendor/quickjs-ng
+          key: qjs-linux-${{ hashFiles('scripts/patches/quickjs-array-buffer-accounting.patch') }}
+
+      - name: Bootstrap
+        run: ./scripts/bootstrap.sh
+
+      - name: Build and package
+        run: ./scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: djs-linux
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+
+  macos:
+    name: build macos-arm64
+    runs-on: macos-14
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          brew update
+          brew install ldc dub libuv openssl@3 brotli ninja cmake pkg-config
+
+      - name: Cache the pinned QuickJS build
+        uses: actions/cache@v4
+        with:
+          path: vendor/quickjs-ng
+          key: qjs-macos-${{ hashFiles('scripts/patches/quickjs-array-buffer-accounting.patch') }}
+
+      - name: Bootstrap
+        env:
+          # Homebrew's LDC and libuv are newer than the pins; the ABI probe and
+          # smoke test are what actually gate the build here.
+          DJS_ALLOW_VERSION_DRIFT: "1"
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+        run: ./scripts/bootstrap.sh
+
+      - name: Build and package
+        run: ./scripts/package.sh
+
+      - name: Smoke test
+        run: |
+          ./djs --version
+          ./djs -e 'const os = require("node:os"); console.log(os.platform(), os.arch())'
+          ./djs -e 'console.log(process.memoryUsage().rss > 0)'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: djs-macos
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub release
+    needs: [linux, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz*
+          generate_release_notes: true

@@ -1,0 +1,7 @@
+{
+  "name": "type-shadow",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "repository": { "type": "git", "url": "git+https://example.test/type-shadow.git" }
+}

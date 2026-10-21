@@ -1,0 +1,9 @@
+{
+  "name": "djs-progress-app",
+  "private": true,
+  "version": "1.0.0",
+  "description": "HTMX + Alpine progress demo running on djs",
+  "main": "server.js",
+  "scripts": { "start": "djs -A server.js" },
+  "dependencies": { "express": "^4.21.2" }
+}

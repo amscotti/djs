@@ -1,0 +1,8 @@
+/a/c
+/a/c /y
+/a/b c.txt c
+.gz  
+../c/d 
+true false /a/c
+/ true
+a/b/ a/b/ . ./

@@ -1,0 +1,2 @@
+deep-made true
+deep-gone ENOENT

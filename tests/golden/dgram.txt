@@ -1,0 +1,3 @@
+bound true
+server ping true
+client pong true

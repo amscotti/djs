@@ -1,0 +1,3 @@
+opendir a.txt,sub/
+opendir-async function
+watchfile 5 1

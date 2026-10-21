@@ -1,0 +1,14 @@
+servers true
+mx true 1 10 mail.example.test
+txt true 1 v=spf1 -all
+srv true 443 svc.example.test
+cname true alias.example.test
+ns true ns1.example.test
+soa true 7 ns1.example.test
+promise-mx mail.example.test
+promise-a 192.0.2.10
+promise-aaaa 2001:db8::1
+promise-soa 7 ns1.example.test
+reverse true ptr.example.test
+promise-reverse ptr.example.test ptr.example.test
+nxdomain ENOTFOUND

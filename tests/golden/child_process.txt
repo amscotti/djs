@@ -1,0 +1,9 @@
+sync 3 "out" "err"
+cwd /tmp
+exec "exec"
+shell 0 "shell"
+input 0 262144
+interleaved 0 4 200000
+spawn 0 null "one\n" "two\n"
+stale false false
+killed null SIGKILL

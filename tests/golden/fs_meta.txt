@@ -1,0 +1,5 @@
+mkdir EEXIST
+append ab
+stat true false 2
+readdir f.txt,sub
+missing ENOENT stat

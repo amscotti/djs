@@ -1,0 +1,10 @@
+digest ba7816bf8f01cfea 32
+hmac true false
+jwk-oct oct true
+aes secret 22
+aes-tamper rejected
+pbkdf2 true
+hkdf true
+rsa 256 true
+spki true
+ecdsa 64 true

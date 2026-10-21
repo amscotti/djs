@@ -1,0 +1,13 @@
+child iterate 6
+memory iterate 6
+error rejected stream-broke
+finished child resolved
+finished ended resolved
+events.on 2 one,two
+once 7
+maxListeners ok true
+stdio 3 true
+listeners 1
+handled boom
+beforeExit 0
+exit 0

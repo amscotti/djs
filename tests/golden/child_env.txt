@@ -1,0 +1,2 @@
+child-env bar /usr/bin:/bin
+child-exit 0

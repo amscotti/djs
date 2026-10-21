@@ -1,0 +1,24 @@
+exports cachedDataVersionTag,deserialize,getHeapCodeStatistics,getHeapSpaceStatistics,getHeapSnapshot,getHeapStatistics,serialize,setFlagsFromString,startupSnapshot,writeHeapSnapshot
+isNotProcess true
+heapKeys 14
+heapShape true
+heapInvariants true
+zapType number
+spaceKeys space_name,space_size,space_used_size,space_available_size,physical_space_size
+spaceName quickjs
+codeKeys code_and_metadata_size,bytecode_and_metadata_size,external_script_source_size,cpu_profiler_metadata_size
+codeTypes true
+tag number true
+building false
+callbackThrows true
+roundtripPrimitives true
+roundtripSparse true
+roundtripCycle true
+roundtripGraph true
+protoSafe true
+throwsFunction true
+throwsSymbol true
+throwsCorrupt true
+throwsBadArg true
+throwsSnapshot true
+flagsNoop true

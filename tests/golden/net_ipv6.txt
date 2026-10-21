@@ -1,0 +1,3 @@
+lookup6 ::1 6
+listen-family IPv6
+ipv6 v6:hi

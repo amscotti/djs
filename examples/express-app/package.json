@@ -1,0 +1,9 @@
+{
+  "name": "djs-express-example",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Express 4 smoke target for the djs runtime",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

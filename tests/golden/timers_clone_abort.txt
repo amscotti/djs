@@ -1,0 +1,4 @@
+timers tick now
+clone 2 0 true true
+abort true stop
+throw stop

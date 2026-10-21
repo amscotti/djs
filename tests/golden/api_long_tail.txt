@@ -1,0 +1,9 @@
+ppid number true function
+title djs-test
+random 4 true
+any true stop
+parse djs true file.js
+style "\u001b[1mx\u001b[22m"
+url file: __ROOT__/tests/js/api_long_tail.js
+glob ["tests/js/fixtures/tls/ca.pem","tests/js/fixtures/tls/client.pem","tests/js/fixtures/tls/server.pem"]
+glob-cb true 3

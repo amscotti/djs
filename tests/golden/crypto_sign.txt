@@ -1,0 +1,5 @@
+sign true
+verify true
+verify-bad false
+keyobject private public
+keyobject-verify true

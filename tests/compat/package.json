@@ -1,0 +1,1 @@
+{"name":"djs-compat","private":true,"version":"1.0.0","dependencies":{"jose":"^5.10.0","ws":"^8.22.0"}}

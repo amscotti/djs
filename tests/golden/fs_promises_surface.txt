@@ -1,0 +1,6 @@
+statfs number true
+opendir true function
+dir-read string function
+dir-iterate a.txt,b.txt
+glob a.txt,b.txt
+open x

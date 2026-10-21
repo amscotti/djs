@@ -1,0 +1,2 @@
+fs TypeError
+require TypeError

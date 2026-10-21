@@ -1,0 +1,109 @@
+{
+    "name": "djs",
+    "description": "A small embeddable JavaScript runtime embedding QuickJS-NG and libuv",
+    "license": "MIT",
+    "targetType": "executable",
+    "targetName": "djs",
+    "mainSourceFile": "src/djs/main.d",
+    "sourcePaths": [
+        "src"
+    ],
+    "importPaths": [
+        "src"
+    ],
+    "stringImportPaths": [
+        "js"
+    ],
+    "libs": [
+        "qjs",
+        "uv",
+        "m",
+        "z"
+    ],
+    "lflags": [
+        "-L$PACKAGE_DIR/vendor/quickjs-ng/build"
+    ],
+    "extraDependencyFiles": [
+        "vendor/quickjs-ng/build/libqjs.a"
+    ],
+    "buildTypes": {
+        "release": {
+            "buildOptions": [
+                "releaseMode",
+                "optimize",
+                "inline"
+            ]
+        }
+    },
+    "configurations": [
+        {
+            "name": "application",
+            "targetType": "executable",
+            "mainSourceFile": "src/djs/main.d",
+            "libs": [
+                "z",
+                "dl",
+                "pthread"
+            ],
+            "lflags": [
+                "-l:libcrypto.so.3",
+                "-l:libssl.so.3",
+                "-l:libbrotlienc.so.1",
+                "-l:libbrotlidec.so.1"
+            ]
+        },
+        {
+            "name": "unittest",
+            "targetType": "executable",
+            "targetName": "djs-unittest",
+            "targetPath": ".dub/unittest",
+            "mainSourceFile": "tests/ut_main.d",
+            "excludedSourceFiles": [
+                "src/djs/main.d"
+            ],
+            "libs": [
+                "z",
+                "dl",
+                "pthread"
+            ],
+            "lflags": [
+                "-l:libcrypto.so.3",
+                "-l:libssl.so.3",
+                "-l:libbrotlienc.so.1",
+                "-l:libbrotlidec.so.1"
+            ]
+        },
+        {
+            "name": "sanitize",
+            "targetType": "executable",
+            "targetName": "djs-asan",
+            "targetPath": ".dub/asan",
+            "mainSourceFile": "src/djs/main.d",
+            "libs": [
+                "z",
+                "dl",
+                "pthread"
+            ],
+            "lflags": [
+                "-l:libcrypto.so.3",
+                "-l:libssl.so.3",
+                "-l:libbrotlienc.so.1",
+                "-l:libbrotlidec.so.1"
+            ]
+        },
+        {
+            "name": "macos",
+            "targetType": "executable",
+            "mainSourceFile": "src/djs/main.d",
+            "lflags": [
+                "-L/opt/homebrew/lib",
+                "-L/opt/homebrew/opt/openssl@3/lib",
+                "-L/opt/homebrew/opt/brotli/lib",
+                "-lcrypto",
+                "-lssl",
+                "-lbrotlienc",
+                "-lbrotlidec"
+            ]
+        }
+    ]
+}

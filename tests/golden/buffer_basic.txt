@@ -1,0 +1,15 @@
+6 true
+6869 aGk=
+hi hi
+233 233
+abcd
+3 7,7,7,7
+write
+bc true -1
+aaaa ababab
+aaaa
+3 abc
+RangeError
+1 1 2
+ffef
+efbfbd f09f9880

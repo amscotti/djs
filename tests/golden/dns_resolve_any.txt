@@ -1,0 +1,12 @@
+mixed [{"address":"192.0.2.10","ttl":60,"type":"A"},{"exchange":"mail.example.test","priority":10,"type":"MX"},{"entries":["v=spf1 -all"],"type":"TXT"}]
+addr [{"address":"192.0.2.10","ttl":60,"type":"A"},{"address":"2001:db8::1","ttl":60,"type":"AAAA"}]
+soa [{"nsname":"ns1.example.test","hostmaster":"hostmaster.example.test","serial":7,"refresh":3600,"retry":600,"expire":86400,"minttl":300,"type":"SOA"}]
+srv [{"name":"svc.example.test","port":443,"priority":5,"weight":10,"type":"SRV"}]
+ptr [{"value":"ptr.example.test","type":"PTR"}]
+ns [{"value":"ns1.example.test","type":"NS"}]
+cname [{"value":"alias.example.test","type":"CNAME"}]
+caa [{"critical":0,"type":"CAA","issue":"ca.example.test"}]
+naptr [{"flags":"s","service":"SIP+D2U","regexp":"!","replacement":"_sip._udp.example.test","order":100,"preference":10,"type":"NAPTR"}]
+empty err=ENODATA
+missing err=ENOTFOUND
+promise 3 A

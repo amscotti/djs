@@ -1,0 +1,8 @@
+{ a: 1, b: 'x' }
+[ 1, 2, 3 ]
+{ a: { b: [Object] } }
+str 2.5 3 4.2 %
+{"a":1}
+{ self: [Circular] }
+multi args 1
+

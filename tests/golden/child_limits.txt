@@ -1,0 +1,4 @@
+timeout null SIGKILL ETIMEDOUT true
+maxbuffer null ERR_CHILD_PROCESS_STDIO_MAXBUFFER 1000
+normal 0 hi
+exec-timeout ETIMEDOUT

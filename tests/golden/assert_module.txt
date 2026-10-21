@@ -1,0 +1,14 @@
+basic ok
+deep ok
+assertion-error AssertionError ERR_ASSERTION strictEqual true true
+deep-mismatch ERR_ASSERTION
+message custom message
+failed 3
+throws-class bad type
+throws ok
+match ok
+strict true true
+rejects ok
+createRequire 42
+isBuiltin true true false
+builtinModules true

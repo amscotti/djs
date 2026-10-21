@@ -1,0 +1,3 @@
+upgrade test "ping"
+status true
+echo true

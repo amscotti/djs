@@ -1,0 +1,15 @@
+const c = require("crypto");
+console.log("sha256", c.createHash("sha256").update("abc").digest("hex"));
+console.log("sha1", c.createHash("sha1").update("abc").digest("hex"));
+console.log("md5", c.createHash("md5").update("abc").digest("hex"));
+console.log("sha512", c.createHash("sha512").update("abc").digest("hex"));
+console.log("binary", c.createHash("sha256").update(Buffer.from([0, 255, 1, 128])).digest("hex"));
+console.log("hmac", c.createHmac("sha256", "key").update("abc").digest("hex"));
+console.log("timing", c.timingSafeEqual(Buffer.from("abc"), Buffer.from("abc")), c.timingSafeEqual(Buffer.from("abc"), Buffer.from("abd")));
+console.log("hmac-binary", c.createHmac("sha1", Buffer.from([0, 1, 255])).update("data").digest("hex"));
+console.log("random", c.randomBytes(24).length);
+console.log("uuid", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(c.randomUUID()));
+const z = require("zlib");
+const s = "differential ".repeat(5000);
+console.log("gzip-roundtrip", z.gunzipSync(z.gzipSync(s)).toString() === s);
+console.log("deflate-raw", z.inflateRawSync(z.deflateRawSync(s)).toString() === s);
