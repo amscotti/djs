@@ -137,6 +137,14 @@ check_exit "exit-code-wins" 3 "$BIN" -e 'Promise.reject(new Error("x")); process
 check_exit "timeout" 1 "$BIN" --timeout 100 tests/js/fixtures/infinite.js
 check_exit "memory-limit" 1 "$BIN" --memory-limit 8388608 tests/js/fixtures/oom.js
 
+# DJS_MAX_FILE_SIZE caps reads (documented env override for the 512 MiB
+# default); both the numeric parse and the EFBIG delivery are observable.
+printf '0123456789abcdef' > "$TMP/big.bin"
+check_stdout "max-file-size-efbig" "EFBIG" env DJS_MAX_FILE_SIZE=8 "$BIN" -A \
+    -e "try{require('fs').readFileSync('$TMP/big.bin')}catch(e){console.log(e.code)}"
+check_stdout "max-file-size-junk-defaults" "16" env DJS_MAX_FILE_SIZE=notanumber "$BIN" -A \
+    -e "console.log(require('fs').readFileSync('$TMP/big.bin').length)"
+
 # --help drifted from the parser once; every documented flag must be listed.
 for flag in --allow-read --allow-write --allow-env --allow-sys --allow-net \
             --allow-run --allow-listen --permission-set --config --no-prompt; do

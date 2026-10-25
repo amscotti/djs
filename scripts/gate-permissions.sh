@@ -252,6 +252,65 @@ EOF
 "$BIN" --config "$TMP/djs-badesc.json" -P -e 'console.log(1)' >/dev/null 2>&1
 if [ $? -ne 0 ]; then echo "permissions: ok config-bad-escape-rejected"; else echo "permissions: FAIL config-bad-escape-rejected" >&2; fail=$((fail+1)); fi
 
+# 23. JSON reader surface: non-string value types and malformed files must
+# behave predictably in a permission config (true grants, null/numbers are
+# ignored, structural errors and excessive nesting abort startup).
+cat > "$TMP/djs-true.json" <<'EOF'
+{"permissions":{"default":{"read": true}}}
+EOF
+expect_contains "config-bool-true-grants" "ok" \
+    --config "$TMP/djs-true.json" -P -e "console.log(require('fs').readFileSync('$TMP/allowed/file.txt','utf8').trim())"
+cat > "$TMP/djs-null.json" <<'EOF'
+{"permissions":{"default":{"read": null}}}
+EOF
+expect_contains "config-null-ignored" "PermissionDenied ERR_ACCESS_DENIED" \
+    --config "$TMP/djs-null.json" -P -e "try{require('fs').readFileSync('$TMP/allowed/file.txt')}catch(e){console.log(e.name,e.code)}"
+cat > "$TMP/djs-number.json" <<'EOF'
+{"permissions":{"default":{"read": 5}}}
+EOF
+expect_contains "config-number-ignored" "PermissionDenied ERR_ACCESS_DENIED" \
+    --config "$TMP/djs-number.json" -P -e "try{require('fs').readFileSync('$TMP/allowed/file.txt')}catch(e){console.log(e.name,e.code)}"
+printf '{"permissions":{"default":{"read":["./allowed"]}' > "$TMP/djs-trunc.json"
+"$BIN" --config "$TMP/djs-trunc.json" -P -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -ne 0 ]; then echo "permissions: ok config-truncated-rejected"; else echo "permissions: FAIL config-truncated-rejected" >&2; fail=$((fail+1)); fi
+# 80 nested arrays: past the parser's depth cap, generated with plain shell.
+{ printf '{"permissions":{"default":{"read":'
+  for _ in $(seq 1 80); do printf '['; done
+  for _ in $(seq 1 80); do printf ']'; done
+  printf '}}}'; } > "$TMP/djs-deep.json"
+"$BIN" --config "$TMP/djs-deep.json" -P -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -ne 0 ]; then echo "permissions: ok config-depth-rejected"; else echo "permissions: FAIL config-depth-rejected" >&2; fail=$((fail+1)); fi
+printf '{"permissions":{}} extra' > "$TMP/djs-garbage.json"
+"$BIN" --config "$TMP/djs-garbage.json" -P -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -ne 0 ]; then echo "permissions: ok config-trailing-garbage-rejected"; else echo "permissions: FAIL config-trailing-garbage-rejected" >&2; fail=$((fail+1)); fi
+
+# 24. CLI flags replace a set's allow rules for that category; config
+# denies always survive.
+cat > "$TMP/djs-mixed.json" <<EOF
+{"permissions":{"default":{"read":{"allow":["$TMP/allowed"],"deny":["$TMP/allowed/secret.txt"]}}}}
+EOF
+printf 'sec\n' > "$TMP/allowed/secret.txt"
+expect_contains "cli-replaces-config-allow" "PermissionDenied ERR_ACCESS_DENIED" \
+    --config "$TMP/djs-mixed.json" -P --allow-read="$TMP/other" -e "try{require('fs').readFileSync('$TMP/allowed/file.txt')}catch(e){console.log(e.name,e.code)}"
+expect_contains "cli-replacement-grants-own" "no" \
+    --config "$TMP/djs-mixed.json" -P --allow-read="$TMP/other" -e "console.log(require('fs').readFileSync('$TMP/other/file.txt','utf8').trim())"
+expect_contains "config-deny-survives-cli-allow" "PermissionDenied ERR_ACCESS_DENIED" \
+    --config "$TMP/djs-mixed.json" -P --allow-read="$TMP/allowed" -e "try{require('fs').readFileSync('$TMP/allowed/secret.txt')}catch(e){console.log(e.name,e.code)}"
+expect_contains "config-allow-alone-still-works" "ok" \
+    --config "$TMP/djs-mixed.json" -P -e "console.log(require('fs').readFileSync('$TMP/allowed/file.txt','utf8').trim())"
+
+# 25. A scoped --allow-run must not pass LD_*/DYLD_* in the child
+# environment (native-code injection outside the sandbox); an unscoped
+# grant may.
+expect_contains "run-ld-preload-scoped-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    --allow-run=sh -e "try{require('child_process').spawn('sh',['-c','true'],{env:{LD_PRELOAD:'/tmp/x.so'}})}catch(e){console.log(e.name,e.code)}"
+expect_contains "run-dyld-scoped-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    --allow-run=sh -e "try{require('child_process').spawn('sh',['-c','true'],{env:{DYLD_INSERT_LIBRARIES:'/tmp/x.dylib'}})}catch(e){console.log(e.name,e.code)}"
+expect_contains "run-ld-preload-unscoped-ok" "ran" \
+    -A -e "const {spawn}=require('child_process'); const c=spawn('sh',['-c','echo ran'],{env:{LD_PRELOAD:'harmless-not-a-lib',OTHER:'1'}}); let o=''; c.stdout.on('data',function(d){o+=d}); c.on('close',function(){console.log(o.trim())})"
+expect_contains "run-scoped-plain-env-ok" "ran" \
+    --allow-run=sh -e "const {spawn}=require('child_process'); const c=spawn('sh',['-c','echo ran'],{env:{FOO:'1'}}); let o=''; c.stdout.on('data',function(d){o+=d}); c.on('close',function(){console.log(o.trim())})"
+
 if [[ $fail -ne 0 ]]; then
     echo "permissions: $fail check(s) failed" >&2
     exit 1

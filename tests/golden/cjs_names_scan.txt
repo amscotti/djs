@@ -1,0 +1,6 @@
+count 16
+values true true true
+quoted true true
+defined true true
+decoys-absent true true true true true
+ns-total 22
