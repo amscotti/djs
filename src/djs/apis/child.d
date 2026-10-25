@@ -20,7 +20,7 @@ import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
 
 import djs.bindings.quickjs;
 import djs.bindings.value;
-import djs.permissions : Perm, permissionCheck, permissionDenied, permissionThrow;
+import djs.permissions : Perm, permissionCheck, permissionDenied, permissionHas, permissionThrow;
 import djs.runtime : Runtime, guarded, runtimeOf, runtimeReportUncaught;
 import djs.registry : CallbackSlot, registryAdd, registryLookup, registryRelease;
 import djs.loop.libuv;
@@ -67,9 +67,11 @@ private bool runAllowed(const(char)* file) @nogc nothrow
     // execSync runs "sh" through PATH. Accept the conventional absolute grant
     // for that same shell as an alias; every other command must match the
     // exact path string. Matching a bare name against any path with that
-    // basename would let a writable /tmp/echo stand in for /bin/echo.
+    // basename would let a writable /tmp/echo stand in for /bin/echo. The
+    // alias is probed with the side-effect-free query: a prompt was already
+    // offered (and declined) for the original name.
     if (strcmp(file, "sh") == 0 && !permissionDenied(Perm.run, "/bin/sh") &&
-        permissionCheck(Perm.run, "/bin/sh"))
+        permissionHas(Perm.run, "/bin/sh"))
         return true;
     return false;
 }

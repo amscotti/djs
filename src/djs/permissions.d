@@ -181,11 +181,30 @@ private char* canonicalAllocRaw(const(char)* path) @nogc nothrow
 {
     if (path is null)
         return null;
+    size_t n = strlen(path);
+    if (n > 1 && path[n - 1] == '/')
+    {
+        // A trailing slash must never reach the parent split below: the
+        // "parent" of "a/b/" is the identical string "a/b/", and the
+        // function would recurse forever (the express static middleware
+        // probes directory paths with trailing slashes). Canonical form
+        // never keeps a trailing slash.
+        size_t keep = n;
+        while (keep > 1 && path[keep - 1] == '/')
+            keep -= 1;
+        char* trimmed = cast(char*) malloc(keep + 1);
+        if (trimmed is null)
+            return null;
+        memcpy(trimmed, path, keep);
+        trimmed[keep] = 0;
+        char* stripped = canonicalAllocRaw(trimmed);
+        free(trimmed);
+        return stripped;
+    }
     char* canon = realpath(path, null);
     if (canon !is null)
         return canon;
 
-    size_t n = strlen(path);
     size_t slash = n;
     while (slash > 0 && path[slash - 1] != '/')
         slash -= 1;
@@ -236,6 +255,26 @@ private char* canonicalAllocRaw(const(char)* path) @nogc nothrow
     memcpy(joined + pl + 1, base, bl + 1);
     free(canonParent);
     return joined;
+}
+
+// Identity (st_dev, st_ino) of the fully canonicalized path: leaf symlinks
+// resolved, so the pair names the inode the permission check actually saw.
+// Async fs workers re-verify the fd they open against this pair, closing
+// the check-to-open TOCTOU window where a script swaps the leaf for a
+// symlink between the check and the worker's open().
+bool permissionPathIdentity(const(char)* path, long* dev, long* ino) @nogc nothrow
+{
+    char* canon = canonicalAlloc(path);
+    if (canon is null)
+        return false;
+    stat_t st = void;
+    bool ok = lstat(canon, &st) == 0;
+    free(canon);
+    if (!ok)
+        return false;
+    *dev = st.st_dev;
+    *ino = st.st_ino;
+    return true;
 }
 
 private bool pathPrefix(const(char)* rule, const(char)* resource) @nogc nothrow
@@ -363,7 +402,7 @@ private bool valueMatches(Perm p, const(char)* rule, const(char)* resource) @nog
     }
     if (p == Perm.env)
         return envMatch(rule, resource is null ? "" : resource);
-    if (p == Perm.net)
+    if (p == Perm.net || p == Perm.listen)
         return netMatch(rule, resource is null ? "" : resource);
     return resource !is null && strlen(rule) == strlen(resource) &&
            memcmp(rule, resource, strlen(rule)) == 0;
@@ -376,8 +415,11 @@ private bool addConfigValue(Perm p, JsonValue* v, const(char)* dir, bool deny) @
         return true;
     if (v.kind == JsonKind.boolValue)
     {
-        bool isDeny = deny ? v.boolean : !v.boolean;
-        return permissionsAdd(p, null, isDeny);
+        // `true` grants/denies the whole category; `false` means "nothing
+        // in this slot" — it must never widen into an unscoped allow.
+        if (v.boolean)
+            return permissionsAdd(p, null, deny);
+        return true;
     }
     if (v.kind == JsonKind.stringValue)
     {
@@ -466,7 +508,7 @@ bool permissionsLoadConfig(const(char)* path, const(char)* setName) @nogc nothro
     return ok;
 }
 private bool promptsEnabled = true;
-private char* auditPath;
+private int auditFd = -1;
 private bool auditInitialised;
 
 void permissionsSetNoPrompt(bool noPrompt) @nogc nothrow
@@ -474,17 +516,28 @@ void permissionsSetNoPrompt(bool noPrompt) @nogc nothrow
     promptsEnabled = !noPrompt;
 }
 
-void permissionsSetAudit(const(char)* path) @nogc nothrow
+// Opens the audit sink once, at startup. Returns false when the path cannot
+// be opened (the caller must abort: a missing audit trail is a failure, not
+// a degraded mode). O_NOFOLLOW refuses a pre-planted symlink at the path.
+bool permissionsSetAudit(const(char)* path) @nogc nothrow
 {
-    free(auditPath);
-    auditPath = null;
-    auditInitialised = true;
+    import core.sys.posix.fcntl : O_APPEND, O_CREAT, O_CLOEXEC, O_NOFOLLOW,
+        O_WRONLY, open;
+    if (auditFd >= 0)
+    {
+        import core.sys.posix.unistd : close;
+        close(auditFd);
+        auditFd = -1;
+    }
+    auditInitialised = false;
     if (path is null || path[0] == 0)
-        return;
-    size_t n = strlen(path);
-    auditPath = cast(char*) malloc(n + 1);
-    if (auditPath !is null)
-        memcpy(auditPath, path, n + 1);
+        return true;
+    auditFd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+                   384); // 0600
+    if (auditFd < 0)
+        return false;
+    auditInitialised = true;
+    return true;
 }
 
 private bool promptFor(Perm p, const(char)* resource) @nogc nothrow
@@ -492,7 +545,9 @@ private bool promptFor(Perm p, const(char)* resource) @nogc nothrow
     if (!promptsEnabled || resource is null)
         return false;
     import core.sys.posix.unistd : isatty;
-    if (isatty(2) == 0)
+    // Prompts need an interactive terminal on both ends: stdin for the
+    // answer, stderr for the question. Anything else fails closed.
+    if (isatty(0) == 0 || isatty(2) == 0)
         return false;
 
     import core.stdc.stdio : FILE, fclose, fgets, fopen, fputs;
@@ -504,14 +559,21 @@ private bool promptFor(Perm p, const(char)* resource) @nogc nothrow
     fputs(permissionName(p), tty);
     fputs(" access to ", tty);
     fputs(resource, tty);
-    fputs("? [y/N] ", tty);
+    fputs("? [y]es once / [a]lways / [n]o ", tty);
     char[16] answer = void;
     bool yes = false;
     if (fgets(answer.ptr, answer.length, tty) !is null)
+    {
         yes = answer[0] == 'y' || answer[0] == 'Y';
+        if (!yes && (answer[0] == 'a' || answer[0] == 'A'))
+        {
+            yes = true;
+            // "always" remembers the grant for the rest of the session;
+            // "yes" applies to this access only.
+            permissionsAdd(p, resource, false);
+        }
+    }
     fclose(tty);
-    if (yes)
-        permissionsAdd(p, resource, false);
     return yes;
 }
 
@@ -519,7 +581,7 @@ private void auditJsonString(char* dst, size_t* o, size_t cap, const(char)* s) @
 {
     if (s is null)
         return;
-    for (size_t i = 0; s[i] && *o + 2 < cap; ++i)
+    for (size_t i = 0; s[i] && *o + 6 < cap; ++i)
     {
         char c = s[i];
         if (c == '"' || c == '\\')
@@ -532,6 +594,27 @@ private void auditJsonString(char* dst, size_t* o, size_t cap, const(char)* s) @
             dst[(*o)++] = '\\';
             dst[(*o)++] = 'n';
         }
+        else if (c == '\r')
+        {
+            dst[(*o)++] = '\\';
+            dst[(*o)++] = 'r';
+        }
+        else if (c == '\t')
+        {
+            dst[(*o)++] = '\\';
+            dst[(*o)++] = 't';
+        }
+        else if (c >= 0 && c < 0x20)
+        {
+            // \u00XX escape: 6 bytes, the reason the loop reserves *o + 6.
+            dst[(*o)++] = '\\';
+            dst[(*o)++] = 'u';
+            dst[(*o)++] = '0';
+            dst[(*o)++] = '0';
+            ubyte h = cast(ubyte) c;
+            dst[(*o)++] = cast(char) ((h >> 4) < 10 ? '0' + (h >> 4) : 'a' + (h >> 4) - 10);
+            dst[(*o)++] = cast(char) ((h & 0xF) < 10 ? '0' + (h & 0xF) : 'a' + (h & 0xF) - 10);
+        }
         else
             dst[(*o)++] = c;
     }
@@ -539,11 +622,13 @@ private void auditJsonString(char* dst, size_t* o, size_t cap, const(char)* s) @
 
 private void auditDecision(Perm p, const(char)* resource, bool allowed) @nogc nothrow
 {
-    if (!auditInitialised || auditPath is null)
+    if (!auditInitialised)
         return;
+    if (auditFd < 0)
+        return;
+
     import core.stdc.time : time;
-    import core.sys.posix.fcntl : O_APPEND, O_CREAT, O_WRONLY, open;
-    import core.sys.posix.unistd : close, write;
+    import core.sys.posix.unistd : write;
 
     char[2048] buf = void;
     size_t o = 0;
@@ -579,31 +664,32 @@ private void auditDecision(Perm p, const(char)* resource, bool allowed) @nogc no
     const(char)* mid2 = "\",\"value\":\"";
     memcpy(buf.ptr + o, mid2, strlen(mid2));
     o += strlen(mid2);
-    auditJsonString(buf.ptr, &o, buf.length, resource);
+    // Keep room for the closing tail regardless of how long the value got;
+    // auditJsonString may stop early, which only truncates the field.
+    enum size_t tailRoom = 24;
+    auditJsonString(buf.ptr, &o, buf.length - tailRoom, resource);
     const(char)* tail = allowed ? "\",\"result\":\"allow\"}\n" : "\",\"result\":\"deny\"}\n";
-    memcpy(buf.ptr + o, tail, strlen(tail));
-    o += strlen(tail);
+    size_t tl = strlen(tail);
+    if (o + tl > buf.length)
+        return; // unreachable while tailRoom covers the tail; fail closed anyway
+    memcpy(buf.ptr + o, tail, tl);
+    o += tl;
 
-    int fd = open(auditPath, O_WRONLY | O_CREAT | O_APPEND, 420);
-    if (fd < 0)
-        return;
     size_t off = 0;
     while (off < o)
     {
-        ssize_t n = write(fd, buf.ptr + off, o - off);
+        ssize_t n = write(auditFd, buf.ptr + off, o - off);
         if (n <= 0)
             break;
         off += cast(size_t) n;
     }
-    close(fd);
 }
 
 bool permissionCheck(Perm p, const(char)* resource) @nogc nothrow
 {
-    bool allowed = false;
-    if ((revoked & p) == 0)
+    bool denied = (revoked & p) != 0;
+    if (!denied)
     {
-        bool denied = false;
         for (size_t i = 0; i < ruleCount; ++i)
             if (rules[i].deny && (rules[i].perm & p) != 0 &&
                 valueMatches(p, rules[i].value, resource))
@@ -611,25 +697,28 @@ bool permissionCheck(Perm p, const(char)* resource) @nogc nothrow
                 denied = true;
                 break;
             }
-        if (!denied)
-        {
-            if (allowAll)
-                allowed = true;
-            else
-                for (size_t i = 0; i < ruleCount; ++i)
-                {
-                    if (rules[i].deny || (rules[i].perm & p) == 0)
-                        continue;
-                    if (valueMatches(p, rules[i].value, resource))
-                    {
-                        allowed = true;
-                        break;
-                    }
-                }
-        }
     }
-
-    if (!allowed)
+    bool allowed = false;
+    if (!denied)
+    {
+        if (allowAll)
+            allowed = true;
+        else
+            for (size_t i = 0; i < ruleCount; ++i)
+            {
+                if (rules[i].deny || (rules[i].perm & p) == 0)
+                    continue;
+                if (valueMatches(p, rules[i].value, resource))
+                {
+                    allowed = true;
+                    break;
+                }
+            }
+    }
+    // A prompt is offered only when no rule matched at all. An explicit
+    // deny rule or a dropped scope is final and must never be overridden
+    // from the terminal.
+    if (!allowed && !denied)
         allowed = promptFor(p, resource);
 
     auditDecision(p, resource, allowed);
@@ -650,9 +739,27 @@ bool permissionDenied(Perm p, const(char)* resource) @nogc nothrow
     return false;
 }
 
+// Side-effect-free query for process.permission.has(): the rule verdict
+// without prompting, auditing, or caching an interactive grant. A query
+// must not change the policy it reports on.
 bool permissionHas(Perm p, const(char)* resource) @nogc nothrow
 {
-    return permissionCheck(p, resource);
+    if ((revoked & p) != 0)
+        return false;
+    for (size_t i = 0; i < ruleCount; ++i)
+        if (rules[i].deny && (rules[i].perm & p) != 0 &&
+            valueMatches(p, rules[i].value, resource))
+            return false;
+    if (allowAll)
+        return true;
+    for (size_t i = 0; i < ruleCount; ++i)
+    {
+        if (rules[i].deny || (rules[i].perm & p) == 0)
+            continue;
+        if (valueMatches(p, rules[i].value, resource))
+            return true;
+    }
+    return false;
 }
 
 const(char)* permissionName(Perm p) @nogc nothrow

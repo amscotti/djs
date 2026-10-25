@@ -99,48 +99,35 @@ private void appendUtf8(char* dst, size_t* o, uint cp) @nogc nothrow
     }
 }
 
-private char* parseString(Parser* p) @nogc nothrow
+// Decode the body of a JSON string literal (between the quotes), applying
+// escape sequences. Returns a malloc'd NUL-terminated string, or null for
+// malformed input (bad \u escape). Shared by the parser and by
+// packageJsonValue so every reader decodes escapes the same way.
+char* jsonDecodeString(const(char)* s, size_t start, size_t end) @nogc nothrow
 {
-    if (p.i >= p.len || p.s[p.i] != '"')
+    if (end < start)
         return null;
-    p.i += 1;
-    size_t start = p.i;
-    size_t extra = 0;
-    while (p.i < p.len)
-    {
-        char c = p.s[p.i];
-        if (c == '"')
-            break;
-        if (c == '\\')
-        {
-            extra += 6; // room for a UTF-8 escape expansion
-            p.i += 2;
-        }
-        else
-        {
-            p.i += 1;
-        }
-    }
-    if (p.i >= p.len || p.s[p.i] != '"')
-        return null;
-    size_t rawLen = p.i - start;
-    char* dst = cast(char*) malloc(rawLen + extra + 1);
+    // Worst case: every remaining char is part of a surrogate-pair escape
+    // expanding to 4 UTF-8 bytes; 1 byte in never costs more than 4 out.
+    char* dst = cast(char*) malloc((end - start) * 4 + 1);
     if (dst is null)
         return null;
     size_t o = 0;
     size_t i = start;
-    size_t end = p.i;
     while (i < end)
     {
-        char c = p.s[i++];
+        char c = s[i++];
         if (c != '\\')
         {
             dst[o++] = c;
             continue;
         }
         if (i >= end)
-            break;
-        char e = p.s[i++];
+        {
+            free(dst);
+            return null;
+        }
+        char e = s[i++];
         switch (e)
         {
         case '"': dst[o++] = '"'; break;
@@ -154,18 +141,17 @@ private char* parseString(Parser* p) @nogc nothrow
         case 'u':
         {
             uint cp = 0;
-            if (!parseHexAt(p.s, i, end, &cp))
+            if (!parseHexAt(s, i, end, &cp))
             {
-                p.ok = false;
                 free(dst);
                 return null;
             }
             i += 4;
             if (cp >= 0xD800 && cp <= 0xDBFF && i + 5 < end &&
-                p.s[i] == '\\' && p.s[i + 1] == 'u')
+                s[i] == '\\' && s[i + 1] == 'u')
             {
                 uint lo = 0;
-                if (parseHexAt(p.s, i + 2, end, &lo) && lo >= 0xDC00 && lo <= 0xDFFF)
+                if (parseHexAt(s, i + 2, end, &lo) && lo >= 0xDC00 && lo <= 0xDFFF)
                 {
                     cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
                     i += 6;
@@ -180,8 +166,35 @@ private char* parseString(Parser* p) @nogc nothrow
         }
     }
     dst[o] = 0;
-    p.i += 1; // closing quote
     return dst;
+}
+
+private char* parseString(Parser* p) @nogc nothrow
+{
+    if (p.i >= p.len || p.s[p.i] != '"')
+        return null;
+    p.i += 1;
+    size_t start = p.i;
+    while (p.i < p.len)
+    {
+        char c = p.s[p.i];
+        if (c == '"')
+            break;
+        if (c == '\\')
+            p.i += 2; // skip the escaped character; \" must not end the scan
+        else
+            p.i += 1;
+    }
+    if (p.i >= p.len || p.s[p.i] != '"')
+        return null;
+    char* decoded = jsonDecodeString(p.s, start, p.i);
+    if (decoded is null)
+    {
+        p.ok = false;
+        return null;
+    }
+    p.i += 1; // closing quote
+    return decoded;
 }
 
 private JsonValue* parseValue(Parser* p) @nogc nothrow;

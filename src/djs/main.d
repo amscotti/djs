@@ -128,7 +128,11 @@ private int runMain(string[] args)
     string configSet = "";
 
     permissionsReset();
-    permissionsSetAudit(getenv("DJS_AUDIT_PERMISSIONS"));
+    if (!permissionsSetAudit(getenv("DJS_AUDIT_PERMISSIONS")))
+    {
+        writeLiteral(2, "djs: cannot open DJS_AUDIT_PERMISSIONS file\n");
+        return 1;
+    }
     while (argStart < args.length)
     {
         string a = args[argStart];
@@ -193,6 +197,15 @@ private int runMain(string[] args)
                 if (p == cast(Perm) 0)
                 {
                     writeLiteral(2, "djs: unknown permission category\n");
+                    return 1;
+                }
+                if (eq != size_t.max && value.length == 0)
+                {
+                    // `--allow-read=` (explicit equals, empty list) is a
+                    // startup error, never a silent whole-category grant.
+                    writeLiteral(2, "djs: empty value for permission flag: ");
+                    writeFd(2, a.ptr, a.length);
+                    writeLiteral(2, "\n");
                     return 1;
                 }
                 if (value.length == 0)
@@ -282,7 +295,15 @@ private int runMain(string[] args)
             }
             if (shortPerm != cast(Perm) 0)
             {
-                string value = a.length > 3 && a[2] == '=' ? a[3 .. $] : "";
+                bool hasEq = a.length >= 3 && a[2] == '=';
+                string value = hasEq ? a[3 .. $] : "";
+                if (hasEq && value.length == 0)
+                {
+                    writeLiteral(2, "djs: empty value for permission flag: ");
+                    writeFd(2, a.ptr, a.length);
+                    writeLiteral(2, "\n");
+                    return 1;
+                }
                 if (value.length == 0)
                 {
                     if (!permissionsAdd(shortPerm, null, false))
@@ -290,9 +311,23 @@ private int runMain(string[] args)
                 }
                 else
                 {
-                    auto z = toStringz(value);
-                    if (!permissionsAdd(shortPerm, z, false))
-                        return 1;
+                    size_t start = 0;
+                    while (start <= value.length)
+                    {
+                        size_t comma = start;
+                        while (comma < value.length && value[comma] != ',')
+                            comma += 1;
+                        string piece = value[start .. comma];
+                        if (piece.length > 0)
+                        {
+                            auto z = toStringz(piece);
+                            if (!permissionsAdd(shortPerm, z, false))
+                                return 1;
+                        }
+                        if (comma == value.length)
+                            break;
+                        start = comma + 1;
+                    }
                 }
                 argStart += 1;
                 continue;

@@ -154,6 +154,104 @@ else
     fail=$((fail+1))
 fi
 
+# 13. A hard link must not turn a read grant into a write grant: the
+# source of the link needs the write grant too (inode aliasing).
+printf 'secret\n' > "$TMP/allowed2/file.txt"
+mkdir -p "$TMP/w"
+expect_contains "hardlink-read-only-source-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    --allow-read="$TMP/allowed2" --allow-write="$TMP/w" -e "try{require('fs').linkSync('$TMP/allowed2/file.txt','$TMP/w/hl')}catch(e){console.log(e.name,e.code)}"
+if [ -e "$TMP/w/hl" ]; then echo "permissions: FAIL hardlink-created" >&2; fail=$((fail+1)); else echo "permissions: ok hardlink-not-created"; fi
+expect_contains "hardlink-write-both-ends" "linked" \
+    --allow-read="$TMP/allowed2" --allow-write="$TMP/allowed2" --allow-write="$TMP/w" -e "const fs=require('fs'); fs.writeFileSync('$TMP/w/src.txt','v'); fs.linkSync('$TMP/w/src.txt','$TMP/w/hl'); console.log('linked')"
+
+# 14. Outbound TLS is gated like net.connect.
+expect_contains "tls-connect-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    -e "try{require('tls').connect(443,'example.com',{})}catch(e){console.log(e.name,e.code)}"
+expect_contains "tls-connect-scoped-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    --allow-net=127.0.0.1:1 -e "try{require('tls').connect(443,'example.com',{})}catch(e){console.log(e.name,e.code)}"
+
+# 15. An explicit empty value (`--allow-read=`) is a startup error, never a
+# silent whole-category grant.
+"$BIN" --allow-read= -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -eq 1 ]; then echo "permissions: ok empty-flag-value-rejected"; else echo "permissions: FAIL empty-flag-value-rejected" >&2; fail=$((fail+1)); fi
+"$BIN" -E= -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -eq 1 ]; then echo "permissions: ok empty-short-flag-rejected"; else echo "permissions: FAIL empty-short-flag-rejected" >&2; fail=$((fail+1)); fi
+
+# 16. Config booleans must not widen: deny:false is "no denies", not allow-all.
+cat > "$TMP/djs-false.json" <<'EOF'
+{"permissions":{"default":{"read":{"allow":["./allowed"],"deny": false}}}}
+EOF
+expect_contains "config-deny-false-still-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    --config "$TMP/djs-false.json" -P -e "try{require('fs').readFileSync('$TMP/other/file.txt')}catch(e){console.log(e.name,e.code)}"
+
+# 17. dgram bind is the listen capability; net grants must not open sockets.
+expect_contains "dgram-bind-net-grant-denied" "PermissionDenied ERR_ACCESS_DENIED" \
+    --allow-net=127.0.0.1:1 -e "try{require('dgram').createSocket('udp4').bind(0,'127.0.0.1')}catch(e){console.log(e.name,e.code)}"
+expect_contains "dgram-bind-listen-granted" "true" \
+    --allow-listen=127.0.0.1:0 -e "const d=require('dgram'); const s=d.createSocket('udp4'); s.bind(0,'127.0.0.1'); console.log(s.address().port>0); s.close()"
+
+# 18. listen rules use host:port matching: wildcards work.
+expect_contains "listen-wildcard-granted" "true" \
+    --allow-listen='*:0' -e "const s=require('net').createServer(); s.listen(0,'127.0.0.1'); console.log(s.address().port>0); s.close()"
+
+# 19. The audit sink is fail-closed: a path that cannot be opened aborts
+# startup, and a very long resource must not corrupt the record or crash.
+DJS_AUDIT_PERMISSIONS="$TMP/no-such-dir/audit.jsonl" "$BIN" --allow-read="$TMP/allowed" \
+    -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -ne 0 ]; then echo "permissions: ok audit-open-fails-startup"; else echo "permissions: FAIL audit-open-fails-startup" >&2; fail=$((fail+1)); fi
+: > "$TMP/audit-long.jsonl"
+DJS_AUDIT_PERMISSIONS="$TMP/audit-long.jsonl" "$BIN" --allow-read="$TMP/allowed" \
+    -e "try{require('fs').readFileSync('$TMP/allowed/' + 'A'.repeat(4000) + '.txt')}catch(e){}" >/dev/null 2>&1
+auditLongRc=$?
+auditLongOk=1
+[ "$auditLongRc" -eq 0 ] || auditLongOk=0
+# Structural check (no python/jq dependency): every record is a complete
+# object — opens as a v1 record and closes with a result field — which the
+# stack overflow would have mangled.
+while IFS= read -r auditLine; do
+    case "$auditLine" in
+        '{"v":1,'*) ;;
+        *) auditLongOk=0; break ;;
+    esac
+    case "$auditLine" in
+        *',"result":"deny"}'|*',"result":"allow"}') ;;
+        *) auditLongOk=0; break ;;
+    esac
+done < "$TMP/audit-long.jsonl"
+[ -s "$TMP/audit-long.jsonl" ] || auditLongOk=0
+if [ "$auditLongOk" -eq 1 ]; then
+    echo "permissions: ok audit-long-resource-valid-jsonl"
+else
+    echo "permissions: FAIL audit-long-resource-valid-jsonl" >&2
+    fail=$((fail+1))
+fi
+
+# 20. process.permission.has() is a query: it must not grant anything.
+expect_contains "has-is-not-a-grant" $'false\nPermissionDenied ERR_ACCESS_DENIED' \
+    --allow-read="$TMP/allowed" -e "console.log(process.permission.has('fs.read','$TMP/other/file.txt')); try{require('fs').readFileSync('$TMP/other/file.txt')}catch(e){console.log(e.name,e.code)}"
+
+# 21. Trailing-slash paths must canonicalize without recursing forever
+# (the canonicalizer's parent split used to reproduce its own input).
+expect_contains "trailing-slash-read" "EISDIR" \
+    --allow-read="$TMP/allowed" -e "try{require('fs').readFileSync('$TMP/allowed/')}catch(e){console.log(e.code)}"
+expect_contains "trailing-slash-read-a" "EISDIR" \
+    -A -e "try{require('fs').readFileSync('$TMP/allowed/')}catch(e){console.log(e.code)}"
+
+# 22. Config string escapes: a \u escape must decode before path matching
+# decides the grant, and a malformed escape must fail startup (never a
+# silent partial parse of a permission file).
+printf 'esc\n' > "$TMP/allowed/esc.txt"
+cat > "$TMP/djs-esc.json" <<'EOF'
+{"permissions":{"default":{"read":["./\u0061llowed"]}}}
+EOF
+expect_contains "config-escape-grants" "esc" \
+    --config "$TMP/djs-esc.json" -P -e "console.log(require('fs').readFileSync('$TMP/allowed/esc.txt','utf8').trim())"
+cat > "$TMP/djs-badesc.json" <<'EOF'
+{"permissions":{"default":{"read":["./\uZZZZ"]}}}
+EOF
+"$BIN" --config "$TMP/djs-badesc.json" -P -e 'console.log(1)' >/dev/null 2>&1
+if [ $? -ne 0 ]; then echo "permissions: ok config-bad-escape-rejected"; else echo "permissions: FAIL config-bad-escape-rejected" >&2; fail=$((fail+1)); fi
+
 if [[ $fail -ne 0 ]]; then
     echo "permissions: $fail check(s) failed" >&2
     exit 1

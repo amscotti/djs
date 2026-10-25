@@ -120,7 +120,7 @@ private extern(C) JSValue jsCreateImpl(JSContext* ctx, JSValueConst, int argc, J
     if (slot < 0) return throwInternalError(ctx, "dgram table exhausted");
     Runtime* rt = runtimeOf(ctx);
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (fd < 0) return makeError(ctx, "socket failed", "EIO", null, "socket");
+    if (fd < 0) return throwError(ctx, makeError(ctx, "socket failed", "EIO", null, "socket"));
     uv_poll_t* p = cast(uv_poll_t*) malloc(uv_handle_size(UV_POLL));
     if (p is null || uv_poll_init_socket(rt.loop, p, fd) != 0)
     {
@@ -154,8 +154,10 @@ private extern(C) JSValue jsBindImpl(JSContext* ctx, JSValueConst, int argc, JSV
     scope(exit) JS_FreeCString(ctx, host);
     char[320] resource = void;
     snprintf(resource.ptr, resource.length, "%.*s:%d", cast(int) hlen, host, port);
-    if (!permissionCheck(Perm.net, resource.ptr))
-        return permissionThrow(ctx, Perm.net, resource.ptr);
+    // Binding a UDP socket opens a local receiving endpoint: that is the
+    // listen capability, not an outbound net grant.
+    if (!permissionCheck(Perm.listen, resource.ptr))
+        return permissionThrow(ctx, Perm.listen, resource.ptr);
     sockaddr_in sa = void;
     sa.sin_family = AF_INET;
     sa.sin_port = htons(cast(ushort) port);
@@ -163,7 +165,7 @@ private extern(C) JSValue jsBindImpl(JSContext* ctx, JSValueConst, int argc, JSV
     if (inet_pton(AF_INET, use, &sa.sin_addr) != 1)
         return throwTypeError(ctx, "only IPv4 bind addresses are supported");
     if (bind(s.fd, cast(sockaddr*) &sa, cast(socklen_t) sockaddr_in.sizeof) != 0)
-        return makeError(ctx, "bind failed", "EADDRINUSE", null, "bind");
+        return throwError(ctx, makeError(ctx, "bind failed", "EADDRINUSE", null, "bind"));
     socklen_t sl = cast(socklen_t) sockaddr_in.sizeof;
     if (getsockname(s.fd, cast(sockaddr*) &sa, &sl) == 0)
         s.port = ntohs(sa.sin_port);
@@ -223,7 +225,7 @@ private extern(C) JSValue jsSendImpl(JSContext* ctx, JSValueConst, int argc, JSV
     if (inet_pton(AF_INET, host, &sa.sin_addr) != 1)
         return throwTypeError(ctx, "only IPv4 send addresses are supported");
     ssize_t n = sendto(s.fd, data, len, 0, cast(sockaddr*) &sa, cast(socklen_t) sockaddr_in.sizeof);
-    if (n < 0) return makeError(ctx, "sendto failed", "EIO", null, "sendto");
+    if (n < 0) return throwError(ctx, makeError(ctx, "sendto failed", "EIO", null, "sendto"));
     return jsInt(cast(int) n);
 }
 extern(C) JSValue jsSend(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
@@ -273,7 +275,7 @@ private extern(C) JSValue jsSetBroadcastImpl(JSContext* ctx, JSValueConst, int a
     if (s is null) return throwTypeError(ctx, "invalid dgram socket");
     int one = JS_ToBool(ctx, argv[1]) > 0 ? 1 : 0;
     if (setsockopt(s.fd, SOL_SOCKET, SO_BROADCAST, &one, cast(socklen_t) int.sizeof) != 0)
-        return makeError(ctx, "setsockopt failed", "EIO", null, "setsockopt");
+        return throwError(ctx, makeError(ctx, "setsockopt failed", "EIO", null, "setsockopt"));
     return jsUndefined();
 }
 extern(C) JSValue jsSetBroadcast(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
@@ -286,7 +288,7 @@ private JSValue setIntOpt(JSContext* ctx, int id, int level, int opt, JSValueCon
     int v = 0;
     if (!toInt32(ctx, val, &v)) return throwTypeError(ctx, "option requires a number");
     if (setsockopt(s.fd, level, opt, &v, cast(socklen_t) int.sizeof) != 0)
-        return makeError(ctx, "setsockopt failed", "EIO", null, "setsockopt");
+        return throwError(ctx, makeError(ctx, "setsockopt failed", "EIO", null, "setsockopt"));
     return jsUndefined();
 }
 
@@ -322,7 +324,7 @@ private JSValue membership(JSContext* ctx, int id, int opt, const(char)* addr) @
         return throwTypeError(ctx, "invalid multicast address");
     req.imr_interface.s_addr = 0;
     if (setsockopt(s.fd, IPPROTO_IP, opt, &req, cast(socklen_t) ip_mreq.sizeof) != 0)
-        return makeError(ctx, "multicast membership failed", "EIO", null, "setsockopt");
+        return throwError(ctx, makeError(ctx, "multicast membership failed", "EIO", null, "setsockopt"));
     return jsUndefined();
 }
 

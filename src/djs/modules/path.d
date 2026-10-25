@@ -8,6 +8,8 @@ import core.sys.posix.stdlib : realpath;
 import core.sys.posix.sys.stat : S_ISDIR, S_ISREG, fstat, stat, stat_t;
 import core.sys.posix.unistd : close, read;
 
+import djs.modules.json : jsonDecodeString;
+
 enum size_t maxSourceFileSize = 64 * 1024 * 1024;
 
 char* xstrdup(const(char)* s) @nogc nothrow
@@ -206,9 +208,14 @@ bool readFileAlloc(const(char)* path, char** dest, size_t* outLen,
         return false;
     }
     size_t len = 0;
+    // `cap` counts the NUL terminator: reads use cap - len - 1, so the
+    // buffer is "full" for content purposes at len + 1 >= cap — that is
+    // the grow condition. (Comparing len == cap never fired, which silently
+    // truncated any file whose size was not captured by the initial fstat —
+    // procfs, FIFOs, files that grew.)
     for (;;)
     {
-        if (len == cap)
+        if (len + 1 >= cap)
         {
             if (cap >= maxSourceFileSize)
             {
@@ -219,6 +226,12 @@ bool readFileAlloc(const(char)* path, char** dest, size_t* outLen,
             size_t next = cap * 2;
             if (next > maxSourceFileSize)
                 next = maxSourceFileSize;
+            if (next <= cap)
+            {
+                free(buf);
+                *err = 27;
+                return false;
+            }
             char* grown = cast(char*) realloc(buf, next);
             if (grown is null)
             {
@@ -313,11 +326,12 @@ char* packageJsonValue(const(char)* path, const(char)* key) @nogc nothrow
                         if (v < len)
                         {
                             size_t n = v - vstart;
-                            result = cast(char*) malloc(n + 1);
-                            if (result is null)
-                                break;
-                            memcpy(result, src + vstart, n);
-                            result[n] = 0;
+                            // Decode escapes: a value written as
+                            // ".\/lib\/x.js" or "mod\u0075le" must resolve
+                            // the same as its plain form. A malformed escape
+                            // means the file is not valid JSON; treat the
+                            // key as absent.
+                            result = jsonDecodeString(src, vstart, v);
                             break;
                         }
                     }

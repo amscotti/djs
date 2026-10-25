@@ -71,8 +71,22 @@ private extern(C) void onTimerClosed(uv_handle_t* h) nothrow @nogc
 
 private void pushFree(Runtime* self, TimerState* state) @nogc nothrow
 {
+    // The pool is bounded: without a cap, clear/setTimeout churn retains
+    // every handle for the process lifetime in native memory the JS memory
+    // limit cannot see.
+    enum size_t timerPoolCap = 64;
+    if (self.timerFreeCount >= timerPoolCap)
+    {
+        state.closing = true;
+        if (state.handle !is null)
+            uv_close(cast(uv_handle_t*) state.handle, &onTimerClosed);
+        else
+            free(state);
+        return;
+    }
     state.freeNext = cast(TimerState*) self.timerFree;
     self.timerFree = cast(void*) state;
+    self.timerFreeCount += 1;
 }
 
 private TimerState* popFree(Runtime* self) @nogc nothrow
@@ -81,6 +95,7 @@ private TimerState* popFree(Runtime* self) @nogc nothrow
     if (state is null)
         return null;
     self.timerFree = cast(void*) state.freeNext;
+    self.timerFreeCount -= 1;
     state.freeNext = null;
     return state;
 }

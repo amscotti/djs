@@ -13,7 +13,7 @@ import core.sys.posix.unistd : environ, getcwd, getpid, getppid;
 import djs.loop.libuv : uv_version_string;
 import djs.bindings.quickjs;
 import djs.bindings.value;
-import djs.permissions : Perm, permissionCheck, permissionFromName, permissionThrow, permissionsRevoke;
+import djs.permissions : Perm, permissionHas, permissionCheck, permissionFromName, permissionThrow, permissionsRevoke;
 import djs.runtime : Runtime, djsVersion, guarded, runtimeOf, runtimeRequestExit;
 
 extern(C) int uv_exepath(char* buffer, size_t* size) nothrow @nogc;
@@ -95,7 +95,9 @@ private JSValue processEnv(JSContext* ctx) @nogc nothrow
         }
         memcpy(keyz, entry, eq);
         keyz[eq] = 0;
-        if (!permissionCheck(Perm.env, keyz))
+        // The startup snapshot filters with a side-effect-free query: no
+        // prompts before user code runs, no audit noise, no cached grants.
+        if (!permissionHas(Perm.env, keyz))
         {
             JS_FreeValue(ctx, val);
             free(keyz);
@@ -296,6 +298,25 @@ extern(C) JSValue jsProcessPlatform(JSContext* ctx, JSValueConst thisVal, int ar
                                     JSValueConst* argv) nothrow @nogc
 {
     return guarded!jsProcessPlatformImpl(ctx, thisVal, argc, argv);
+}
+
+private extern(C) JSValue jsProcessArchImpl(JSContext* ctx, JSValueConst, int,
+                                             JSValueConst*) nothrow @nogc
+{
+    version (X86_64)
+        return newString(ctx, "x64");
+    else version (AArch64)
+        return newString(ctx, "arm64");
+    else version (Arm)
+        return newString(ctx, "arm");
+    else
+        return newString(ctx, "unknown");
+}
+
+extern(C) JSValue jsProcessArch(JSContext* ctx, JSValueConst thisVal, int argc,
+                                JSValueConst* argv) nothrow @nogc
+{
+    return guarded!jsProcessArchImpl(ctx, thisVal, argc, argv);
 }
 
 private extern(C) JSValue jsProcessVersionImpl(JSContext* ctx, JSValueConst, int,
@@ -549,7 +570,9 @@ private extern(C) JSValue jsPermissionHasImpl(JSContext* ctx, JSValueConst, int 
     size_t rl = 0;
     if (argc >= 2)
         resource = JS_ToCStringLen2(ctx, &rl, argv[1], false);
-    bool allowed = p != cast(Perm) 0 && permissionCheck(p, resource);
+    // Query the rules without prompting, auditing, or granting: has() must
+    // be side-effect-free (Node/Deno semantics).
+    bool allowed = p != cast(Perm) 0 && permissionHas(p, resource);
     if (resource !is null)
         JS_FreeCString(ctx, resource);
     JS_FreeCString(ctx, scopeName);
@@ -597,6 +620,7 @@ bool installProcess(Runtime* self, JSValueConst djs) @nogc nothrow
         && addNativeFunction(ctx, obj, "cwd", &jsProcessCwd, 0)
         && addNativeFunction(ctx, obj, "exit", &jsProcessExit, 1)
         && addNativeFunction(ctx, obj, "platform", &jsProcessPlatform, 0)
+        && addNativeFunction(ctx, obj, "arch", &jsProcessArch, 0)
         && addNativeFunction(ctx, obj, "execPath", &jsProcessExecPath, 0)
         && addNativeFunction(ctx, obj, "pid", &jsProcessPid, 0)
         && addNativeFunction(ctx, obj, "ppid", &jsProcessPpid, 0)

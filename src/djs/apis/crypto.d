@@ -69,6 +69,9 @@ extern(C) {
     int EVP_DecryptUpdate(EVP_CIPHER_CTX*, ubyte*, int*, const(ubyte)*, int) nothrow @nogc;
     int EVP_DecryptFinal_ex(EVP_CIPHER_CTX*, ubyte*, int*) nothrow @nogc;
     int EVP_CIPHER_CTX_ctrl(EVP_CIPHER_CTX*, int, int, void*) nothrow @nogc;
+    // OpenSSL 3 exported accessors (the historical names are header macros).
+    int EVP_CIPHER_get_key_length(const(EVP_CIPHER)*) nothrow @nogc;
+    int EVP_CIPHER_get_iv_length(const(EVP_CIPHER)*) nothrow @nogc;
 
     int PKCS5_PBKDF2_HMAC(const(char)*, int, const(ubyte)*, int, int, const(EVP_MD)*, int, ubyte*) nothrow @nogc;
     EVP_PKEY_CTX* EVP_PKEY_CTX_new_from_name(void*, const(char)*, const(char)*) nothrow @nogc;
@@ -550,9 +553,25 @@ private extern(C) JSValue jsCipherImpl(JSContext* ctx, JSValueConst, int argc, J
     EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
     if (c is null) return throwInternalError(ctx, "EVP_CIPHER_CTX_new failed");
     scope(exit) EVP_CIPHER_CTX_free(c);
+    // EVP_*Init_ex has no length arguments: it reads the cipher's fixed
+    // key/IV length from the supplied pointers regardless of the actual
+    // buffer size. Validate both, or a short key reads past the end of a
+    // QuickJS heap allocation inside OpenSSL.
+    {
+        int wantKey = EVP_CIPHER_get_key_length(cipher);
+        int wantIv = EVP_CIPHER_get_iv_length(cipher);
+        if (wantKey > 0 && cast(int) key.len != wantKey)
+            return throwRangeError(ctx, "invalid key length");
+        // GCM takes a caller-chosen IV length through SET_IVLEN below;
+        // everything else must match the cipher's fixed IV length exactly.
+        if (!gcm && wantIv > 0 && cast(int) iv.len != wantIv)
+            return throwRangeError(ctx, "invalid IV length");
+        if (gcm && iv.len < 1)
+            return throwRangeError(ctx, "invalid IV length");
+    }
     size_t outCap = input.len + 64;
     ubyte* outp = cast(ubyte*) malloc(outCap);
-    if (outp is null) return throwInternalError(ctx, "outp of memory");
+    if (outp is null) return throwInternalError(ctx, "out of memory");
     scope(exit) free(outp);
     int outl = 0, total = 0;
     if (gcm)
@@ -632,6 +651,13 @@ private extern(C) JSValue jsPbkdf2Impl(JSContext* ctx, JSValueConst, int argc, J
     int iterations = 0, keylen = 0;
     if (!toInt32(ctx, argv[2], &iterations) || iterations <= 0 || !toInt32(ctx, argv[3], &keylen) || keylen <= 0)
         return throwTypeError(ctx, "invalid pbkdf2 parameters");
+    // pbkdf2 runs to completion on the loop thread and cannot be interrupted
+    // by the interpreter's deadline handler; bound the parameters so a
+    // hostile script cannot pin the event loop (or the native heap) forever.
+    if (iterations > 10_000_000)
+        return throwRangeError(ctx, "pbkdf2 iterations too large");
+    if (keylen > 8 * 1024 * 1024)
+        return throwRangeError(ctx, "pbkdf2 key length too large");
     const(EVP_MD)* md = digestByName(null, 0);
     const(char)* dn = null; size_t dlen = 0;
     if (!toStringView(ctx, argv[4], &dn, &dlen)) return jsException();
@@ -643,7 +669,7 @@ private extern(C) JSValue jsPbkdf2Impl(JSContext* ctx, JSValueConst, int argc, J
     if (!bytesAcquire(ctx, argv[1], salt)) { bytesRelease(ctx, pass); return jsException(); }
     scope(exit) { bytesRelease(ctx, pass); bytesRelease(ctx, salt); }
     ubyte* outp = cast(ubyte*) malloc(cast(size_t) keylen);
-    if (outp is null) return throwInternalError(ctx, "outp of memory");
+    if (outp is null) return throwInternalError(ctx, "out of memory");
     scope(exit) free(outp);
     if (PKCS5_PBKDF2_HMAC(cast(const(char)*) pass.ptr, cast(int) pass.len, salt.ptr, cast(int) salt.len,
                           iterations, md, keylen, outp) != 1)
@@ -725,7 +751,7 @@ private extern(C) JSValue jsScryptImpl(JSContext* ctx, JSValueConst, int argc, J
     if (!bytesAcquire(ctx, argv[1], salt)) { bytesRelease(ctx, pass); return jsException(); }
     scope(exit) { bytesRelease(ctx, pass); bytesRelease(ctx, salt); }
     ubyte* outp = cast(ubyte*) malloc(cast(size_t) keylen);
-    if (outp is null) return throwInternalError(ctx, "outp of memory");
+    if (outp is null) return throwInternalError(ctx, "out of memory");
     scope(exit) free(outp);
     if (EVP_PBE_scrypt(cast(const(char)*) pass.ptr, pass.len, salt.ptr, salt.len,
                        cast(ulong) N, cast(ulong) r, cast(ulong) p, 32 * 1024 * 1024, outp, cast(size_t) keylen) != 1)
@@ -772,6 +798,14 @@ private extern(C) JSValue jsGenerateKeyPairImpl(JSContext* ctx, JSValueConst, in
         JS_FreeCString(ctx, type);
         JS_FreeCString(ctx, curve);
         return jsException();
+    }
+    // Key generation is uninterruptible native compute on the loop thread;
+    // bound the modulus like Node's sanity range rather than accept INT_MAX.
+    if (bits < 512 || bits > 16384)
+    {
+        JS_FreeCString(ctx, type);
+        JS_FreeCString(ctx, curve);
+        return throwRangeError(ctx, "unsupported modulus size");
     }
     char* typez = cast(char*) malloc(tl + 1);
     char* curvez = cast(char*) malloc(cl + 1);

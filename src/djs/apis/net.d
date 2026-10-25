@@ -264,10 +264,16 @@ private extern(C) void pollCb(uv_poll_t* handle, int status, int events) nothrow
         JSValue err = netError(rt.ctx, sysErr, s.connecting ? "connect" : "poll");
         JSValue[1] argv = [err];
         ulong id = s.connectCb != 0 ? s.connectCb : s.readCb;
+        // A write-only socket (connect done, no read callback) can still
+        // have a pending write callback: release it here too, or the slot
+        // and its JSValue leak when the connection errors out.
+        if (id == 0)
+            id = s.writeCb;
         s.connecting = false;
         callSlot(rt, id, 1, argv.ptr, true);
         JS_FreeValue(rt.ctx, err);
         s.connectCb = s.readCb = 0;
+        s.writeCb = 0;
         closeSock(s, false);
         return;
     }
@@ -383,6 +389,11 @@ private extern(C) void pollCb(uv_poll_t* handle, int status, int events) nothrow
         ulong cbId = s.writeCb;
         s.writeCb = 0;
         callSlot(rt, cbId, 1, argv.ptr, true);
+        // The write callback ran arbitrary JS: it may have destroyed the
+        // socket (write-then-end is the common pattern). Re-check before
+        // re-arming the poll handle, as the read path does.
+        if (s.closing || s.poll is null)
+            return;
         int ev = 0;
         if (s.reading) ev |= UV_READABLE;
         if (s.wbuf !is null) ev |= UV_WRITABLE;
@@ -938,7 +949,10 @@ private extern(C) JSValue jsNetCloseImpl(JSContext* ctx, JSValueConst, int argc,
     int id = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &id))
         return throwTypeError(ctx, "close requires an id");
-    if (id < 1 || id > maxSockets)
+    // Ids come from a monotonic counter, not a slot index: any id >= 1 may
+    // name a live socket. An upper bound here would strand every socket
+    // created after the table's first full generation.
+    if (id < 1)
         return jsUndefined();
     NetSock* s = findSock(cast(uint) id);
     if (s.used)
@@ -1006,8 +1020,13 @@ private extern(C) JSValue jsNetDetachFdImpl(JSContext* ctx, JSValueConst, int ar
     s.id = 0;
     if (s.readCb != 0 && s.rt !is null) registryRelease(s.rt.ctx, &s.rt.registry, s.readCb);
     if (s.writeCb != 0 && s.rt !is null) registryRelease(s.rt.ctx, &s.rt.registry, s.writeCb);
+    if (s.connectCb != 0 && s.rt !is null) registryRelease(s.rt.ctx, &s.rt.registry, s.connectCb);
+    if (s.wbuf !is null) free(s.wbuf);
+    s.wbuf = null;
+    s.wlen = s.woff = 0;
     s.readCb = 0;
     s.writeCb = 0;
+    s.connectCb = 0;
     return jsInt(fd);
 }
 extern(C) JSValue jsNetDetachFd(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
@@ -1091,7 +1110,7 @@ private extern(C) JSValue jsNetListenImpl(JSContext* ctx, JSValueConst, int argc
         if (inet_pton(AF_INET6, use, &sa6.sin6_addr) != 1)
             return throwTypeError(ctx, "invalid listen address");
         fd = openSocket(AF_INET6, SOCK_STREAM);
-        if (fd < 0) return netError(ctx, errno, "socket");
+        if (fd < 0) return throwError(ctx, netError(ctx, errno, "socket"));
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, cast(socklen_t) int.sizeof);
         if (reusePort) setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, cast(socklen_t) int.sizeof);
@@ -1099,7 +1118,7 @@ private extern(C) JSValue jsNetListenImpl(JSContext* ctx, JSValueConst, int argc
         {
             int e = errno;
             close(fd);
-            return netError(ctx, e, "listen");
+            return throwError(ctx, netError(ctx, e, "listen"));
         }
     }
     else
@@ -1110,7 +1129,7 @@ private extern(C) JSValue jsNetListenImpl(JSContext* ctx, JSValueConst, int argc
         if (inet_pton(AF_INET, use, &sa.sin_addr) != 1)
             return throwTypeError(ctx, "invalid listen address");
         fd = openSocket(AF_INET, SOCK_STREAM);
-        if (fd < 0) return netError(ctx, errno, "socket");
+        if (fd < 0) return throwError(ctx, netError(ctx, errno, "socket"));
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, cast(socklen_t) int.sizeof);
         if (reusePort) setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, cast(socklen_t) int.sizeof);
@@ -1118,7 +1137,7 @@ private extern(C) JSValue jsNetListenImpl(JSContext* ctx, JSValueConst, int argc
         {
             int e = errno;
             close(fd);
-            return netError(ctx, e, "listen");
+            return throwError(ctx, netError(ctx, e, "listen"));
         }
     }
     int slot = -1;

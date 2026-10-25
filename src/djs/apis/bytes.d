@@ -65,9 +65,21 @@ private bool encodingIs(const(char)* enc, const(char)* name) @nogc nothrow
     if (strlen(enc) != n)
         return false;
     for (size_t i = 0; i < n; ++i)
-        if (enc[i] != name[i])
+    {
+        char a = enc[i], b = name[i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b)
             return false;
+    }
     return true;
+}
+
+// True for the utf16le family (utf16le/utf-16le/ucs2/ucs-2).
+private bool encodingIsUtf16(const(char)* enc) @nogc nothrow
+{
+    return encodingIs(enc, "utf16le") || encodingIs(enc, "utf-16le") ||
+           encodingIs(enc, "ucs2") || encodingIs(enc, "ucs-2");
 }
 
 private extern(C) JSValue jsEncodeImpl(JSContext* ctx, JSValueConst, int argc,
@@ -99,6 +111,7 @@ private extern(C) JSValue jsEncodeImpl(JSContext* ctx, JSValueConst, int argc,
     bool utf8 = enc is null || encodingIs(enc, "utf8") || encodingIs(enc, "utf-8");
     bool latin1 = encodingIs(enc, "latin1") || encodingIs(enc, "binary") ||
                   encodingIs(enc, "ascii");
+    bool utf16 = encodingIsUtf16(enc);
     bool hex = encodingIs(enc, "hex");
     bool b64 = encodingIs(enc, "base64");
 
@@ -124,7 +137,7 @@ private extern(C) JSValue jsEncodeImpl(JSContext* ctx, JSValueConst, int argc,
             }
         }
     }
-    else if (latin1 || hex || b64)
+    else if (latin1 || hex || b64 || utf16)
     {
         if (latin1)
         {
@@ -135,6 +148,35 @@ private extern(C) JSValue jsEncodeImpl(JSContext* ctx, JSValueConst, int argc,
                 uint cp = utf8Next(s, len, &i);
                 if (dstBytes is null) break;
                 dstBytes[o++] = cast(ubyte) (cp & 0xFF);
+            }
+            outLen = o;
+        }
+        else if (utf16)
+        {
+            // UTF-8 input -> UTF-16LE bytes. A code point above the BMP
+            // becomes a surrogate pair; 4 bytes per code point is the
+            // worst case and len bounds the code-point count.
+            dstBytes = cast(ubyte*) malloc(len > 0 ? len * 4 : 1);
+            size_t i = 0, o = 0;
+            while (i < len)
+            {
+                uint cp = utf8Next(s, len, &i);
+                if (dstBytes is null) break;
+                if (cp >= 0x10000)
+                {
+                    cp -= 0x10000;
+                    uint hi = 0xD800 + (cp >> 10);
+                    uint lo = 0xDC00 + (cp & 0x3FF);
+                    dstBytes[o++] = cast(ubyte) (hi & 0xFF);
+                    dstBytes[o++] = cast(ubyte) (hi >> 8);
+                    dstBytes[o++] = cast(ubyte) (lo & 0xFF);
+                    dstBytes[o++] = cast(ubyte) (lo >> 8);
+                }
+                else
+                {
+                    dstBytes[o++] = cast(ubyte) (cp & 0xFF);
+                    dstBytes[o++] = cast(ubyte) (cp >> 8);
+                }
             }
             outLen = o;
         }
@@ -186,7 +228,7 @@ private extern(C) JSValue jsEncodeImpl(JSContext* ctx, JSValueConst, int argc,
     JS_FreeCString(ctx, s);
     if (enc !is null) JS_FreeCString(ctx, enc);
     if (dstBytes is null)
-        return throwInternalError(ctx, "dstBytes of memory");
+        return throwInternalError(ctx, "out of memory");
     JSValue ab = newTrackedArrayBuffer(ctx, runtimeOf(ctx), dstBytes, outLen);
     free(dstBytes);
     return ab;
@@ -241,7 +283,54 @@ private extern(C) JSValue jsDecodeImpl(JSContext* ctx, JSValueConst, int argc,
         bool ascii = encodingIs(enc, "ascii");
         bool hex = encodingIs(enc, "hex");
         bool b64 = encodingIs(enc, "base64");
-        if (latin1)
+        bool utf16 = encodingIsUtf16(enc);
+        if (utf16)
+        {
+            // UTF-16LE bytes -> UTF-8 for JS_NewStringLen. Surrogate pairs
+            // combine; an unpaired surrogate becomes U+FFFD. 3 bytes per
+            // input byte covers every expansion (2 in -> <=4 out, unpaired
+            // 2 in -> 3 out).
+            dstBytes = cast(char*) malloc(len * 3 + 1);
+            size_t o = 0;
+            for (size_t i = 0; dstBytes !is null && i + 1 < len; i += 2)
+            {
+                uint u = cast(uint) bytes[i] | (cast(uint) bytes[i + 1] << 8);
+                uint cp = u;
+                if (u >= 0xD800 && u <= 0xDBFF && i + 3 < len)
+                {
+                    uint lo = cast(uint) bytes[i + 2] | (cast(uint) bytes[i + 3] << 8);
+                    if (lo >= 0xDC00 && lo <= 0xDFFF)
+                    {
+                        cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                        i += 2;
+                    }
+                }
+                else if (u >= 0xD800 && u <= 0xDFFF)
+                    cp = 0xFFFD; // unpaired surrogate
+                if (cp < 0x80)
+                    dstBytes[o++] = cast(char) cp;
+                else if (cp < 0x800)
+                {
+                    dstBytes[o++] = cast(char) (0xC0 | (cp >> 6));
+                    dstBytes[o++] = cast(char) (0x80 | (cp & 0x3F));
+                }
+                else if (cp < 0x10000)
+                {
+                    dstBytes[o++] = cast(char) (0xE0 | (cp >> 12));
+                    dstBytes[o++] = cast(char) (0x80 | ((cp >> 6) & 0x3F));
+                    dstBytes[o++] = cast(char) (0x80 | (cp & 0x3F));
+                }
+                else
+                {
+                    dstBytes[o++] = cast(char) (0xF0 | (cp >> 18));
+                    dstBytes[o++] = cast(char) (0x80 | ((cp >> 12) & 0x3F));
+                    dstBytes[o++] = cast(char) (0x80 | ((cp >> 6) & 0x3F));
+                    dstBytes[o++] = cast(char) (0x80 | (cp & 0x3F));
+                }
+            }
+            outLen = o;
+        }
+        else if (latin1)
         {
             dstBytes = cast(char*) malloc(len * 2 + 1);
             size_t o = 0;
@@ -294,7 +383,7 @@ private extern(C) JSValue jsDecodeImpl(JSContext* ctx, JSValueConst, int argc,
         }
         if (enc !is null) JS_FreeCString(ctx, enc);
         if (dstBytes is null)
-            return throwInternalError(ctx, "dstBytes of memory");
+            return throwInternalError(ctx, "out of memory");
         result = JS_NewStringLen(ctx, dstBytes, outLen);
         free(dstBytes);
         return result;

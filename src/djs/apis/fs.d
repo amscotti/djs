@@ -1,6 +1,6 @@
 module djs.apis.fs;
 
-import core.stdc.errno : EBADF, EEXIST, EFBIG, EINTR, EINVAL, EIO, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOMEM, errno;
+import core.stdc.errno : EACCES, EBADF, EEXIST, EFBIG, EINTR, EINVAL, EIO, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOMEM, errno;
 import core.stdc.stdio : rename;
 import core.stdc.stdlib : calloc, free, malloc, realloc;
 import core.stdc.string : memchr, memcpy, strlen;
@@ -21,7 +21,7 @@ import djs.bindings.quickjs;
 import djs.bindings.value;
 import djs.loop.libuv;
 import djs.registry;
-import djs.permissions : Perm, permissionCheck, permissionError, permissionThrow;
+import djs.permissions : Perm, permissionCheck, permissionError, permissionPathIdentity, permissionThrow;
 import djs.runtime : Runtime, guarded, newTrackedArrayBuffer, runtimeOf, runtimeReportUncaught;
 
 // The v0.1 read cap. Node's fs.readFile refuses files above 2 GiB; 512 MiB
@@ -96,6 +96,15 @@ struct FsWork
     int isChar;
     int isBlock;
     bool noFollow;
+    // Identity of path/path2 as seen by the permission check on the JS
+    // thread. The worker compares the opened fd against these; a mismatch
+    // means the leaf was swapped after the check (symlink TOCTOU).
+    bool ckValid;
+    long ckDev;
+    long ckIno;
+    bool ck2Valid;
+    long ck2Dev;
+    long ck2Ino;
     bool withTypes; // readdir: prefix each entry with its dirent type
 }
 
@@ -176,6 +185,17 @@ private size_t maxFileSize() @nogc nothrow
 // Growable read loop. Short reads are normal; EOF is the only stopping point.
 // Regular files are presized with fstat so a too-large file fails before any
 // allocation, and non-regular files (pipes, devices) are capped.
+private bool fdIdentityMatches(FsWork* w, int fd, bool second = false) @nogc nothrow
+{
+    if (second ? !w.ck2Valid : !w.ckValid)
+        return true; // nothing identifiable was captured (new file, etc.)
+    stat_t st = void;
+    if (fstat(fd, &st) != 0)
+        return false;
+    return st.st_dev == (second ? w.ck2Dev : w.ckDev) &&
+           st.st_ino == (second ? w.ck2Ino : w.ckIno);
+}
+
 private void doRead(FsWork* w) @nogc nothrow
 {
     w.syscall = "open";
@@ -183,6 +203,15 @@ private void doRead(FsWork* w) @nogc nothrow
     if (fd < 0)
     {
         w.err = errno;
+        return;
+    }
+    if (!fdIdentityMatches(w, fd))
+    {
+        // The leaf changed between the permission check and this open
+        // (swapped symlink or rename): what was opened is not what was
+        // checked. Fail closed.
+        close(fd);
+        w.err = EACCES;
         return;
     }
     w.syscall = "read";
@@ -269,6 +298,12 @@ private void doWrite(FsWork* w) @nogc nothrow
     if (fd < 0)
     {
         w.err = errno;
+        return;
+    }
+    if (!fdIdentityMatches(w, fd))
+    {
+        close(fd);
+        w.err = EACCES;
         return;
     }
     w.syscall = "write";
@@ -488,6 +523,12 @@ private void doCopy(FsWork* w) @nogc nothrow
         w.err = errno;
         return;
     }
+    if (!fdIdentityMatches(w, src))
+    {
+        close(src);
+        w.err = EACCES;
+        return;
+    }
     stat_t sst = void;
     if (fstat(src, &sst) != 0)
     {
@@ -501,6 +542,13 @@ private void doCopy(FsWork* w) @nogc nothrow
     {
         w.err = errno;
         close(src);
+        return;
+    }
+    if (!fdIdentityMatches(w, dst, true))
+    {
+        close(src);
+        close(dst);
+        w.err = EACCES;
         return;
     }
     stat_t dstst = void;
@@ -745,6 +793,12 @@ private extern(C) void fsWorkCb(uv_work_t* req) nothrow @nogc
         w.fd = open(w.path, w.openFlags, cast(uint) w.mode);
         if (w.fd < 0)
             w.err = errno;
+        else if (!fdIdentityMatches(w, w.fd))
+        {
+            close(w.fd);
+            w.fd = -1;
+            w.err = EACCES;
+        }
         break;
     }
 }
@@ -1318,16 +1372,22 @@ private JSValue startFsWork(JSContext* ctx, Runtime* self, FsOp op, char* path,
 {
     // Async permission denial is delivered through the callback, matching the
     // rest of the async fs error contract. It is invoked before the request is
-    // queued; no libuv work starts for a denied operation.
+    // queued; no libuv work starts for a denied operation. The failing side
+    // and kind are captured during the checks themselves: re-evaluating a
+    // check to build the message could issue a second interactive prompt.
     bool needsWrite = fsOpWrites(op);
-    bool allowed = skipPermission || permissionCheck(needsWrite ? Perm.write : Perm.read, path);
-    if (allowed && path2 !is null)
-        allowed = permissionCheck(Perm.write, path2);
+    Perm kind = needsWrite ? Perm.write : Perm.read;
+    const(char)* bad = path;
+    bool allowed = skipPermission || permissionCheck(kind, path);
+    if (allowed && path2 !is null && !permissionCheck(Perm.write, path2))
+    {
+        allowed = false;
+        bad = path2;
+        kind = Perm.write;
+    }
     if (!allowed)
     {
-        const(char)* bad = !permissionCheck(needsWrite ? Perm.write : Perm.read, path)
-            ? path : path2;
-        JSValue err = permissionError(ctx, needsWrite ? Perm.write : Perm.read, bad);
+        JSValue err = permissionError(ctx, kind, bad);
         free(path);
         free(path2);
         free(data);
@@ -1365,6 +1425,10 @@ private JSValue startFsWork(JSContext* ctx, Runtime* self, FsOp op, char* path,
     w.recursive = recursive;
     w.force = force;
     w.excl = excl;
+    // Remember what the check saw; the worker re-verifies after open.
+    w.ckValid = permissionPathIdentity(path, &w.ckDev, &w.ckIno);
+    if (path2 !is null)
+        w.ck2Valid = permissionPathIdentity(path2, &w.ck2Dev, &w.ck2Ino);
     w.req = cast(uv_work_t*) malloc(uv_req_size(UV_WORK));
     if (w.req is null)
     {
@@ -2174,8 +2238,11 @@ private extern(C) JSValue jsLinkSyncImpl(JSContext* ctx, JSValueConst, int argc,
     char* to = null;
     if (!getPath(ctx, argv[0], &from)) return jsException();
     if (!getPath(ctx, argv[1], &to)) { free(from); return jsException(); }
-    if (!permissionCheck(Perm.read, from))
-    { JSValue e = permissionThrow(ctx, Perm.read, from); free(from); free(to); return e; }
+    // A hard link shares the inode with `from`, so a link created inside a
+    // write scope must not make `from` writable through the new path. Both
+    // ends need the write grant (Deno's rule for op_link_sync).
+    if (!permissionCheck(Perm.write, from))
+    { JSValue e = permissionThrow(ctx, Perm.write, from); free(from); free(to); return e; }
     if (!permissionCheck(Perm.write, to))
     { JSValue e = permissionThrow(ctx, Perm.write, to); free(from); free(to); return e; }
     int rc = link(from, to);
@@ -2530,7 +2597,9 @@ private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int arg
     ulong cb = registryAdd(ctx, &rt.registry, argv[1], null);
     if (cb == 0)
     {
-        free(p);
+        // p is an initialized, loop-registered handle: raw free() would
+        // leave a dangling entry uv_loop_close walks into. Close it.
+        uv_close(cast(uv_handle_t*) p, &watchHandleClosed);
         inotify_rm_watch(fd, wd);
         close(fd);
         w.used = false;

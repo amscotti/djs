@@ -3,7 +3,8 @@ module djs.apis.signals;
 // Receiving POSIX signals through libuv. One uv_signal_t per signum; the
 // JavaScript prelude keeps the handler list and routes names to numbers.
 // process.kill() is intentionally not implemented: sending signals to other
-// processes is a separate capability and is not part of this phase.
+// processes is a separate capability from receiving them, and child_process
+// already owns process creation.
 
 import core.stdc.stdlib : free, malloc;
 

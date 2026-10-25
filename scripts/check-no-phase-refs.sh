@@ -10,7 +10,10 @@ for t in "${TARGETS[@]}"; do [ -d "$t" ] && EXISTING+=("$t"); done
 [ ${#EXISTING[@]} -gt 0 ] || { echo "check-no-phase-refs: no source dirs yet (ok)"; exit 0; }
 
 PATTERN='Phase[[:space:]]+[0-9]|phase-[0-9]|PHASE_[0-9]|Plan[[:space:]]+phase|Task[[:space:]]+[0-9]+'
-if grep -RInE --exclude-dir=build --exclude-dir=.dub -- "$PATTERN" "${EXISTING[@]}"; then
+# Only regular files: -R also opens FIFOs (fs tests create them under
+# tests/) and blocks forever on the open.
+if find "${EXISTING[@]}" -type f -not -path '*/build/*' -not -path '*/.dub/*' -print0 \
+  | xargs -0 grep -nE -- "$PATTERN"; then
   echo "check-no-phase-refs: FAIL — remove phase/task references from code, tests, and comments" >&2
   exit 1
 fi

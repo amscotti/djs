@@ -13,7 +13,7 @@ import core.stdc.string : memcmp, memcpy, strlen;
 import core.sys.posix.netdb : addrinfo, freeaddrinfo, getaddrinfo;
 import core.sys.posix.poll : POLLIN, POLLOUT, poll, pollfd;
 import core.sys.posix.sys.socket : AF_UNSPEC, SO_ERROR, SOCK_STREAM, SOL_SOCKET,
-    connect, getsockopt, setsockopt, socket, sockaddr, socklen_t;
+    SO_TYPE, connect, getsockopt, setsockopt, socket, sockaddr, socklen_t;
 import core.sys.posix.unistd : close;
 
 import djs.bindings.quickjs;
@@ -284,8 +284,10 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
             return;
         }
     }
-    else
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, null);
+    // Verification mode is set only by the `if (j.verify)` block above:
+    // SSL_VERIFY_PEER when verifying, and OpenSSL's default (VERIFY_NONE)
+    // otherwise. Do not touch it here — an `else` on the ALPN branch used to
+    // reset VERIFY_PEER for every connection without an ALPN list.
     SSL* ssl = SSL_new(ctx);
     if (ssl is null) { setMsg(j, "SSL_new failed"); j.err = 1; return; }
     j.ssl = ssl;
@@ -371,7 +373,8 @@ private void releaseSock(TlsSock* s) @nogc nothrow
     s.id = 0;
 }
 
-private void tlsCall(Runtime* rt, ulong cb, JSValue* argv, int argc) @nogc nothrow
+private void tlsCall(Runtime* rt, ulong cb, JSValue* argv, int argc,
+                     bool release = false) @nogc nothrow
 {
     if (rt !is null && cb != 0)
     {
@@ -383,6 +386,11 @@ private void tlsCall(Runtime* rt, ulong cb, JSValue* argv, int argc) @nogc nothr
             JS_FreeValue(rt.ctx, fn);
             if (jsIsException(r)) { JS_FreeValue(rt.ctx, r); runtimeReportUncaught(rt, rt.ctx); }
             else JS_FreeValue(rt.ctx, r);
+            // One-shot callbacks (connect, single write, final read) release
+            // their slot here; the registry's generation check makes a
+            // later release of the same id a no-op, not a double free.
+            if (release)
+                registryRelease(rt.ctx, &rt.registry, cb);
         }
     }
     // Callers hand ownership of every argument to tlsCall; JS_Call borrows.
@@ -409,7 +417,7 @@ private void flushWrites(TlsSock* s) @nogc nothrow
         {
             JSValue err = makeError(s.rt.ctx, "TLS write failed", "ERR_TLS_WRITE", null, null);
             JSValue[1] argv = [err];
-            tlsCall(s.rt, cb, argv.ptr, 1);
+            tlsCall(s.rt, cb, argv.ptr, 1, true);
         }
         return;
     }
@@ -421,7 +429,7 @@ private void flushWrites(TlsSock* s) @nogc nothrow
     if (cb != 0)
     {
         JSValue[1] argv = [jsNull()];
-        tlsCall(s.rt, cb, argv.ptr, 1);
+        tlsCall(s.rt, cb, argv.ptr, 1, true);
     }
 }
 
@@ -444,7 +452,7 @@ private extern(C) void tlsPollCb(uv_poll_t* h, int status, int events) nothrow @
     int e = SSL_get_error(s.ssl, n);
     if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE) return;
     JSValue[2] argv = [jsNull(), jsNull()];
-    tlsCall(s.rt, s.readCb, argv.ptr, 2);
+    tlsCall(s.rt, s.readCb, argv.ptr, 2, true);
     s.readCb = 0;
 }
 
@@ -476,7 +484,7 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
         JSValue err = makeError(rt.ctx, j.msg[0] != 0 ? j.msg.ptr : "TLS failed",
                                 "ERR_TLS_HANDSHAKE", null, null);
         JSValue[2] argv = [err, jsUndefined()];
-        tlsCall(rt, j.cb, argv.ptr, 2);
+        tlsCall(rt, j.cb, argv.ptr, 2, true);
         freeJob(j);
         return;
     }
@@ -489,7 +497,7 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
         SSL_CTX_free(j.ctx);
         JSValue err = makeError(rt.ctx, "TLS table exhausted", "ERR_TLS_EXHAUSTED", null, null);
         JSValue[2] argv = [err, jsUndefined()];
-        tlsCall(rt, j.cb, argv.ptr, 2);
+        tlsCall(rt, j.cb, argv.ptr, 2, true);
         freeJob(j);
         return;
     }
@@ -509,7 +517,7 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
         releaseSock(s);
         JSValue err = makeError(rt.ctx, "TLS poll init failed", "ERR_TLS_INIT", null, null);
         JSValue[2] argv = [err, jsUndefined()];
-        tlsCall(rt, j.cb, argv.ptr, 2);
+        tlsCall(rt, j.cb, argv.ptr, 2, true);
         freeJob(j);
         return;
     }
@@ -517,7 +525,7 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
     uv_handle_set_data(cast(uv_handle_t*) p, s);
     uv_poll_start(p, UV_READABLE | UV_WRITABLE, &tlsPollCb);
     JSValue[2] argv = [jsNull(), jsInt(cast(int) s.id)];
-    tlsCall(rt, j.cb, argv.ptr, 2);
+    tlsCall(rt, j.cb, argv.ptr, 2, true);
     freeJob(j);
 }
 
@@ -549,6 +557,28 @@ private extern(C) JSValue jsTlsConnectImpl(JSContext* ctx, JSValueConst, int arg
     const(char)* sni = null;
     size_t slen = 0;
     if (!toStringView(ctx, argv[2], &sni, &slen)) { JS_FreeCString(ctx, host); return jsException(); }
+    // Outbound TLS is gated exactly like net.connect: host:port checked
+    // before any DNS query or socket is made. __djs.tls.connect is
+    // reachable from user code, so the check must live here, in native.
+    char[320] netRes = void;
+    {
+        import core.stdc.stdio : snprintf;
+        int rn = snprintf(netRes.ptr, netRes.length, "%.*s:%d",
+                          cast(int) hlen, host, port);
+        if (rn <= 0 || cast(size_t) rn >= netRes.length)
+        {
+            JS_FreeCString(ctx, host);
+            JS_FreeCString(ctx, sni);
+            return throwRangeError(ctx, "host too long");
+        }
+    }
+    if (!permissionCheck(Perm.net, netRes.ptr))
+    {
+        JSValue e = permissionThrow(ctx, Perm.net, netRes.ptr);
+        JS_FreeCString(ctx, host);
+        JS_FreeCString(ctx, sni);
+        return e;
+    }
     char* caOpt = null;
     char* certOpt = null;
     char* keyOpt = null;
@@ -773,6 +803,14 @@ private extern(C) JSValue jsAcceptFdImpl(JSContext* ctx, JSValueConst, int argc,
     int fd = -1;
     if (argc < 3 || !toInt32(ctx, argv[0], &fd) || fd < 0)
         return throwTypeError(ctx, "acceptFd requires (fd, cert, key)");
+    // The descriptor must be a socket: fd 0/1/2 (or any unrelated file)
+    // would otherwise run a "handshake" over stdio and get closed on us.
+    {
+        int soType = 0;
+        socklen_t soLen = cast(socklen_t) int.sizeof;
+        if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &soType, &soLen) != 0)
+            return throwTypeError(ctx, "acceptFd requires a socket fd");
+    }
     const(char)* cert = null;
     size_t clen = 0;
     if (!toStringView(ctx, argv[1], &cert, &clen)) return jsException();
@@ -818,7 +856,7 @@ private extern(C) JSValue jsAcceptFdImpl(JSContext* ctx, JSValueConst, int argc,
         {
             SSL_CTX_free(sctx);
             close(fd);
-            return makeError(ctx, "could not load CA file", "ERR_TLS_INVALID_CA", caOpt, "tls");
+            return throwError(ctx, makeError(ctx, "could not load CA file", "ERR_TLS_INVALID_CA", caOpt, "tls"));
         }
         int mode = SSL_VERIFY_PEER;
         if (requestCert) mode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
@@ -832,7 +870,7 @@ private extern(C) JSValue jsAcceptFdImpl(JSContext* ctx, JSValueConst, int argc,
     {
         SSL_CTX_free(sctx);
         close(fd);
-        return makeError(ctx, "invalid certificate or key", "ERR_TLS_INVALID_CERT", null, "tls");
+        return throwError(ctx, makeError(ctx, "invalid certificate or key", "ERR_TLS_INVALID_CERT", null, "tls"));
     }
     SSL* ssl = SSL_new(sctx);
     if (ssl is null)
@@ -842,6 +880,10 @@ private extern(C) JSValue jsAcceptFdImpl(JSContext* ctx, JSValueConst, int argc,
         return throwInternalError(ctx, "SSL_new failed");
     }
     SSL_set_fd(ssl, fd);
+    // The handshake runs on the loop thread; a total deadline bounds how
+    // long one stalling client can freeze every timer and I/O event. The
+    // per-call poll timeout stays, but the loop as a whole is capped.
+    ulong deadline = uv_hrtime() + 10_000_000_000UL; // 10 s
     while (true)
     {
         int rc = SSL_accept(ssl);
@@ -849,15 +891,24 @@ private extern(C) JSValue jsAcceptFdImpl(JSContext* ctx, JSValueConst, int argc,
         int e = SSL_get_error(ssl, rc);
         if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE)
         {
+            if (uv_hrtime() >= deadline)
+            {
+                SSL_free(ssl); SSL_CTX_free(sctx); close(fd);
+                return throwError(ctx, makeError(ctx, "TLS handshake timed out", "ETIMEDOUT", null, "tls"));
+            }
             pollfd p = void;
             p.fd = fd;
             p.events = e == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT;
-            if (poll(&p, 1, 10000) > 0) continue;
+            // Never wait past the deadline.
+            long leftMs = cast(long) ((deadline - uv_hrtime()) / 1_000_000);
+            if (leftMs <= 0) leftMs = 1;
+            if (leftMs > 10000) leftMs = 10000;
+            if (poll(&p, 1, cast(int) leftMs) > 0) continue;
             SSL_free(ssl); SSL_CTX_free(sctx); close(fd);
-            return makeError(ctx, "TLS handshake timed out", "ETIMEDOUT", null, "tls");
+            return throwError(ctx, makeError(ctx, "TLS handshake timed out", "ETIMEDOUT", null, "tls"));
         }
         SSL_free(ssl); SSL_CTX_free(sctx); close(fd);
-        return makeError(ctx, "TLS handshake failed", "ERR_TLS_HANDSHAKE", null, "tls");
+        return throwError(ctx, makeError(ctx, "TLS handshake failed", "ERR_TLS_HANDSHAKE", null, "tls"));
     }
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);

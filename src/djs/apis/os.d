@@ -18,7 +18,7 @@ import core.sys.posix.sys.utsname : uname, utsname;
 
 import djs.bindings.quickjs;
 import djs.bindings.value;
-import djs.permissions : Perm, permissionCheck, permissionThrow;
+import djs.permissions : Perm, permissionHas, permissionCheck, permissionThrow;
 import djs.runtime : Runtime, guarded;
 
 private long sysconfLong(int name) @nogc nothrow
@@ -175,8 +175,10 @@ private extern(C) JSValue jsOsRelease(JSContext* ctx, JSValueConst thisVal, int 
 private extern(C) JSValue jsOsTmpdirImpl(JSContext* ctx, JSValueConst, int,
                                          JSValueConst*) nothrow @nogc
 {
-    if (!permissionCheck(Perm.env, "TMPDIR"))
-        return permissionThrow(ctx, Perm.env, "TMPDIR");
+    // Denied TMPDIR falls back to /tmp instead of throwing: os.tmpdir() is
+    // on every defensive library's startup path.
+    if (!permissionHas(Perm.env, "TMPDIR"))
+        return newString(ctx, "/tmp");
     return newString(ctx, envOr("TMPDIR", "/tmp"));
 }
 

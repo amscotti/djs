@@ -40,7 +40,7 @@ enum string preludeSource =
     import("prelude/07-net.js") ~
     import("prelude/08-v8.js");
 
-enum string djsVersion = "v0.16.3";
+enum string djsVersion = "v0.16.4";
 enum size_t defaultMemoryLimit = 256 * 1024 * 1024;
 enum size_t defaultStackSize = 1024 * 1024;
 enum int maxJobsPerTurn = 10000;
@@ -101,6 +101,7 @@ struct Runtime
     // Intrusive lists owned by apis.timers.
     void* timerHead;
     void* timerFree;
+    size_t timerFreeCount; // bounded: excess handles are closed, not pooled
 
     RejectionEntry* rejections;
     size_t rejectionCount;
@@ -1121,7 +1122,7 @@ fail:
         free(self.idle);
     if (self.deadlineHandle !is null &&
         uv_is_closing(cast(uv_handle_t*) self.deadlineHandle) == 0)
-        uv_close(cast(uv_handle_t*) self.deadlineHandle, null);
+        uv_close(cast(uv_handle_t*) self.deadlineHandle, &onControlClosed);
     if (self.loop !is null)
     {
         // Close callbacks free the handle memory; then close the loop.
@@ -1179,7 +1180,7 @@ int runtimeTeardown(Runtime* self) @nogc nothrow
         uv_close(cast(uv_handle_t*) self.idle, &onControlClosed);
     if (self.deadlineHandle !is null &&
         uv_is_closing(cast(uv_handle_t*) self.deadlineHandle) == 0)
-        uv_close(cast(uv_handle_t*) self.deadlineHandle, null);
+        uv_close(cast(uv_handle_t*) self.deadlineHandle, &onControlClosed);
 
     bool loopStuck = false;
     if (self.loop !is null)
