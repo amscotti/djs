@@ -199,6 +199,9 @@ private int runMain(string[] args)
                     writeLiteral(2, "djs: unknown permission category\n");
                     return 1;
                 }
+                // An explicit CLI flag replaces this category's allow rules
+                // from a -P permission set (denies always merge).
+                permissionsMarkCli(p);
                 if (eq != size_t.max && value.length == 0)
                 {
                     // `--allow-read=` (explicit equals, empty list) is a
@@ -295,6 +298,7 @@ private int runMain(string[] args)
             }
             if (shortPerm != cast(Perm) 0)
             {
+                permissionsMarkCli(shortPerm);
                 bool hasEq = a.length >= 3 && a[2] == '=';
                 string value = hasEq ? a[3 .. $] : "";
                 if (hasEq && value.length == 0)

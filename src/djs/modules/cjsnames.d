@@ -161,8 +161,45 @@ private bool rehashSlots(ref NameSet set, size_t newCount) @safe @nogc nothrow
     return true;
 }
 
-private void addName(ref NameSet set, const(char)[] name) @safe @nogc nothrow
+// Scan the member of an `exports.` / `exports[...]` assignment: an
+// identifier (`exports.foo = 1`) or a quoted string key
+// (`exports['foo-bar'] = 1`, matching cjs-module-lexer), followed by a
+// plain assignment (a `==` comparison contributes nothing). `bracket`
+// selects the `[`quoted`]` form. `j` advances past the member either way.
+private void addAssignmentName(const(char)[] s, ref size_t j, bool bracket,
+                               ref NameSet set)
+    @safe @nogc nothrow
 {
+    size_t start = j;
+    size_t n = 0;
+    if (bracket)
+    {
+        if (j >= s.length || (s[j] != '"' && s[j] != '\''))
+            return;
+        size_t e = skipString(s, j);
+        start = j + 1;
+        n = e > start ? e - start - 1 : 0;
+        j = e;
+        if (j >= s.length || s[j] != ']')
+            return;
+        j += 1;
+    }
+    else
+    {
+        while (j < s.length && isPart(s[j]))
+            j += 1;
+        n = j - start;
+    }
+    if (n == 0 || j >= s.length)
+        return;
+    size_t k = j;
+    while (k < s.length && (s[k] == ' ' || s[k] == '\t'))
+        k += 1;
+    if (k < s.length && s[k] == '=' && (k + 1 >= s.length || s[k + 1] != '='))
+        addName(set, s[start .. start + n]);
+}
+
+private void addName(ref NameSet set, const(char)[] name) @safe @nogc nothrow{
     if (name.length == 0 || !isStart(name[0]) || reserved(name))
         return;
     // Keep the table at most half full so probe runs stay short.
@@ -405,42 +442,42 @@ private void scanNames(const(char)[] s, ref NameSet set) @safe @nogc nothrow
         if (startsWith(s, i, "exports."))
         {
             size_t j = i + 8;
-            size_t start = j;
-            while (j < s.length && isPart(s[j]))
-                j += 1;
-            if (j > start && j < s.length)
-            {
-                size_t k = j;
-                while (k < s.length && (s[k] == ' ' || s[k] == '\t'))
-                    k += 1;
-                if (k < s.length && s[k] == '=')
-                    addName(set, s[start .. j]);
-            }
+            addAssignmentName(s, j, false, set);
             i = j;
             continue;
         }
-        if (startsWith(s, i, "module.exports."))
+        // exports['quoted-key'] = ... — and module.exports['...'], which
+        // reaches this same branch at its `exports` tail.
+        if (startsWith(s, i, "exports["))
         {
-            size_t j = i + 15;
-            size_t start = j;
-            while (j < s.length && isPart(s[j]))
-                j += 1;
-            if (j > start && j < s.length)
-            {
-                size_t k = j;
-                while (k < s.length && (s[k] == ' ' || s[k] == '\t'))
-                    k += 1;
-                if (k < s.length && s[k] == '=')
-                    addName(set, s[start .. j]);
-            }
+            size_t j = i + 8;
+            addAssignmentName(s, j, true, set);
             i = j;
             continue;
         }
         if (startsWith(s, i, "module.exports"))
         {
+            // "module.exports" is 14 characters; the member form
+            // (`module.exports.x = ...`) delegates to the shared assignment
+            // scanner, the whole-object form (`module.exports = {...}`) to
+            // the literal scanner below.
             size_t j = i + 14;
             while (j < s.length && (s[j] == ' ' || s[j] == '\t'))
                 j += 1;
+            if (j < s.length && s[j] == '.')
+            {
+                j += 1;
+                addAssignmentName(s, j, false, set);
+                i = j;
+                continue;
+            }
+            if (j < s.length && s[j] == '[')
+            {
+                j += 1;
+                addAssignmentName(s, j, true, set);
+                i = j;
+                continue;
+            }
             if (j < s.length && s[j] == '=')
             {
                 j += 1;

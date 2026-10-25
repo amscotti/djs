@@ -15,6 +15,16 @@ import djs.runtime : Runtime, runtimeOf, runtimeRunScriptFlags, writeLiteral;
 
 // Small malloc-backed builder; the module sources are assembled here rather
 // than by concatenating GC strings.
+private bool isIdentStart(char c) @nogc nothrow
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
+}
+
+private bool isIdentPart(char c) @nogc nothrow
+{
+    return isIdentStart(c) || (c >= '0' && c <= '9');
+}
+
 private struct Buf
 {
     char* p;
@@ -318,13 +328,42 @@ private char* cjsModuleSource(const(char)* path, const(char)* src, size_t len) @
     b.add("\");\nexport default __m;\n");
     NameSet names;
     collectCjsExportNames(src, len, &names);
+    size_t anon = 0;
     for (size_t i = 0; i < names.count; ++i)
     {
-        b.add("export const ");
-        b.add(names.names[i]);
-        b.add(" = __m.");
-        b.add(names.names[i]);
-        b.add(";\n");
+        const(char)* name = names.names[i];
+        size_t nl = strlen(name);
+        // `export const NAME` needs a valid identifier; a string-key export
+        // (exports['quoted-key'] = ...) is exposed through a string export
+        // name instead, which is still reachable via the namespace object.
+        bool ident = nl > 0 && isIdentStart(name[0]);
+        for (size_t k = 1; ident && k < nl; ++k)
+            if (!isIdentPart(name[k]))
+                ident = false;
+        if (ident)
+        {
+            b.add("export const ");
+            b.add(name);
+            b.add(" = __m.");
+            b.add(name);
+            b.add(";\n");
+        }
+        else
+        {
+            char[24] idxBuf = void;
+            size_t o = 0;
+            ulong v = anon++;
+            do { idxBuf[o++] = cast(char) ('0' + v % 10); v /= 10; } while (v > 0);
+            b.add("const __x");
+            for (size_t d = o; d > 0; --d) b.addChar(idxBuf[d - 1]);
+            b.add(" = __m[");
+            b.addJsString(name);
+            b.add("];\nexport { __x");
+            for (size_t d = o; d > 0; --d) b.addChar(idxBuf[d - 1]);
+            b.add(" as ");
+            b.addJsString(name);
+            b.add(" };\n");
+        }
     }
     nameSetFree(&names);
     free(dir);

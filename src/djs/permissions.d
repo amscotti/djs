@@ -42,6 +42,11 @@ private size_t ruleCount;
 private size_t ruleCap;
 private bool allowAll;
 private uint revoked;
+// Categories the CLI granted or denied explicitly. A CLI flag replaces that
+// category's *allow* rules from a -P permission set; deny rules always
+// merge. Without this provenance the two sources would silently union,
+// which is wider than either configuration alone.
+private Perm cliTouched;
 
 void permissionsReset() @nogc nothrow
 {
@@ -53,11 +58,35 @@ void permissionsReset() @nogc nothrow
     ruleCap = 0;
     allowAll = false;
     revoked = 0;
+    cliTouched = cast(Perm) 0;
 }
 
 void permissionsAllowAll() @nogc nothrow
 {
     allowAll = true;
+}
+
+void permissionsMarkCli(Perm p) @nogc nothrow
+{
+    cliTouched |= p;
+}
+
+// True when the category carries an unscoped grant (`-A`, or a bare
+// --allow-run): the sandbox-escape category. Scoped grants must not pass
+// a child environment that preloads native code (LD_*/DYLD_*), which would
+// execute outside every permission check.
+bool permissionUnscoped(Perm p) @nogc nothrow
+{
+    if (allowAll)
+        return true;
+    for (size_t i = 0; i < ruleCount; ++i)
+    {
+        if (rules[i].deny || (rules[i].perm & p) == 0)
+            continue;
+        if (rules[i].value is null || rules[i].value[0] == 0)
+            return true;
+    }
+    return false;
 }
 
 void permissionsRevoke(Perm p) @nogc nothrow
@@ -412,6 +441,10 @@ private bool valueMatches(Perm p, const(char)* rule, const(char)* resource) @nog
 private bool addConfigValue(Perm p, JsonValue* v, const(char)* dir, bool deny) @nogc nothrow
 {
     if (v is null)
+        return true;
+    // A CLI flag for this category replaces the set's allows; denies from
+    // the set always merge (a config deny cannot be undone by a CLI allow).
+    if (!deny && (cliTouched & p) != 0)
         return true;
     if (v.kind == JsonKind.boolValue)
     {

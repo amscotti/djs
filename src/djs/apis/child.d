@@ -20,7 +20,7 @@ import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
 
 import djs.bindings.quickjs;
 import djs.bindings.value;
-import djs.permissions : Perm, permissionCheck, permissionDenied, permissionHas, permissionThrow;
+import djs.permissions : Perm, permissionCheck, permissionDenied, permissionHas, permissionThrow, permissionUnscoped;
 import djs.runtime : Runtime, guarded, runtimeOf, runtimeReportUncaught;
 import djs.registry : CallbackSlot, registryAdd, registryLookup, registryRelease;
 import djs.loop.libuv;
@@ -586,6 +586,22 @@ private void freeAsyncArgs(JSContext* ctx, const(char)* fileJs, char** args,
     }
 }
 
+// True for an environment entry whose name is a dynamic-loader injection
+// variable (LD_PRELOAD, LD_LIBRARY_PATH, DYLD_INSERT_LIBRARIES, ...): the
+// name must be checked only up to the '='.
+private bool envIsLoaderVar(const(char)* entry) @nogc nothrow
+{
+    return startsWithPrefix(entry, "LD_") || startsWithPrefix(entry, "DYLD_");
+}
+
+private bool startsWithPrefix(const(char)* s, const(char)* prefix) @nogc nothrow
+{
+    for (size_t i = 0; prefix[i] != 0; ++i)
+        if (s[i] != prefix[i])
+            return false;
+    return true;
+}
+
 private char** readEnvArray(JSContext* ctx, JSValueConst options) @nogc nothrow
 {
     JSValue ev = JS_GetPropertyStr(ctx, options, "_env");
@@ -681,6 +697,23 @@ private extern(C) JSValue jsChildSpawnAsyncImpl(JSContext* ctx, JSValueConst, in
         {
             freeAsyncArgs(ctx, fileJs, args, argCount, cwd);
             return jsException();
+        }
+    }
+    // A scoped --allow-run must not smuggle a native-code loader into the
+    // child: LD_*/DYLD_* in the *script-supplied* environment would run
+    // outside every later permission check. Only an unscoped run grant may
+    // pass them (the inherited environment is the operator's own choice).
+    if (envp !is null && !permissionUnscoped(Perm.run))
+    {
+        for (size_t e = 0; envp[e] !is null; ++e)
+        {
+            if (envIsLoaderVar(envp[e]))
+            {
+                JSValue err = permissionThrow(ctx, Perm.run, envp[e]);
+                freeEnvArray(ctx, envp);
+                freeAsyncArgs(ctx, fileJs, args, argCount, cwd);
+                return err;
+            }
         }
     }
 
