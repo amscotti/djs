@@ -360,6 +360,18 @@
     function fetch(input, init) {
         init = init || {};
         return new Promise(function (resolve, reject) {
+            // AbortSignal: an already-aborted signal rejects without any I/O;
+            // aborting mid-flight tears the request down.
+            var signal = init.signal;
+            if (signal) {
+                if (signal.aborted) {
+                    var ae0 = new Error('The operation was aborted');
+                    ae0.name = 'AbortError';
+                    reject(ae0);
+                    return;
+                }
+                if (typeof signal.addEventListener !== 'function') signal = null;
+            }
             var u = new URL(input);
             if (u.protocol !== 'http:' && u.protocol !== 'https:') {
                 var e = new Error('only http:// and https:// are supported');
@@ -387,7 +399,18 @@
                 if (!headers['content-type'] && outBody.type) headers['content-type'] = outBody.type;
                 outBody = outBody._buffer();
             }
+            var aborted = false;
+            function abortFetch() {
+                if (aborted) return;
+                aborted = true;
+                var ae = new Error('The operation was aborted');
+                ae.name = 'AbortError';
+                try { req.destroy(); } catch (derr) { /* already gone */ }
+                reject(ae);
+            }
+            if (signal) signal.addEventListener('abort', abortFetch);
             var req = request({ protocol: u.protocol, hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + (u.search || ''), method: init.method || 'GET', headers: headers, rejectUnauthorized: init.rejectUnauthorized !== false }, {}, function (res) {
+                if (aborted) return;
                 var h = {};
                 for (var k in res.headers) if (Object.prototype.hasOwnProperty.call(res.headers, k)) h[k] = res.headers[k];
                 var body = null;
@@ -410,7 +433,10 @@
                 response._contentEncoding = h['content-encoding'];
                 resolve(response);
             });
-            req.on('error', reject);
+            req.on('error', function (err) {
+                if (aborted) return;
+                reject(err);
+            });
             if (outBody !== undefined && outBody !== null) req.write(outBody);
             req.end();
         });

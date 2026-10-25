@@ -672,7 +672,16 @@
 
     function cpSync(src, dest, options) {
         options = options || {};
-        var st = statSync(src);
+        // lstat first: the link decision must see the link itself. With
+        // dereference the classification falls through to the followed
+        // target, matching Node.
+        var lst = fsObj.lstatSync(src);
+        if (lst.isSymbolicLink && lst.isSymbolicLink() && !options.dereference) {
+            try { unlinkSync(dest); } catch (e) {}
+            fsObj.symlinkSync(fsObj.readlinkSync(src), dest);
+            return;
+        }
+        var st = lst.isSymbolicLink && lst.isSymbolicLink() ? statSync(src) : lst;
         if (st.isDirectory()) {
             if (!options.recursive) throw new Error("cp: directory requires recursive: true");
             mkdirSync(dest, { recursive: true });
@@ -683,11 +692,6 @@
             return;
         }
         mkdirSync(pathModule.dirname(dest), { recursive: true });
-        if (st.isSymbolicLink && st.isSymbolicLink() && !options.dereference) {
-            try { unlinkSync(dest); } catch (e) {}
-            symlinkSync(fsObj.readlinkSync(src), dest);
-            return;
-        }
         if (!options.force && fsObj.existsSync(dest)) {
             if (options.errorOnExist) throw new Error("cp: destination exists: " + dest);
             return;

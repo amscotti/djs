@@ -231,6 +231,7 @@
         cwd: function () { return __djs.process.cwd(); },
         exit: function (code) { __djs.process.exit(code === undefined ? 0 : code); },
         platform: __djs.process.platform(),
+        arch: __djs.process.arch(),
         version: __djs.process.version(),
         // The Node API level djs emulates. `process.version` stays djs's own,
         // as in Deno; libraries gate features on `versions.node`, so it must

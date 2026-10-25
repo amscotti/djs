@@ -16,6 +16,7 @@
         var self = this;
         __djs.tls.startRead(this._id, function (err, data) {
             if (self.destroyed) return;
+            self._armTimeout();
             if (err) { self.emit('error', err); self.destroy(); return; }
             if (data === null) { self.push(null); self.destroy(); return; }
             self.push(Buffer.from(data));
@@ -28,6 +29,7 @@
             cb(e);
             return;
         }
+        this._armTimeout();
         __djs.tls.write(this._id, chunk, function (err) { cb(err || undefined); });
     };
     TlsSocket.prototype._final = function (cb) {
@@ -37,13 +39,33 @@
     TlsSocket.prototype.destroy = function (err) {
         if (this.destroyed) return this;
         this.destroyed = true;
+        if (this._timeoutTimer) { clearTimeout(this._timeoutTimer); this._timeoutTimer = null; }
         if (this._id) { __djs.tls.close(this._id); this._id = 0; }
         if (err) this.emit('error', err);
         this.emit('close');
         return this;
     };
     TlsSocket.prototype.setNoDelay = function () { return this; };
-    TlsSocket.prototype.setTimeout = function () { return this; };
+    // A real idle timer, re-armed on every read and write: HttpConnection
+    // arms headersTimeout/requestTimeout through this, and a no-op here
+    // meant a slowloris client could hold a TLS server socket forever.
+    TlsSocket.prototype._armTimeout = function () {
+        var self = this;
+        if (this._timeoutTimer) { clearTimeout(this._timeoutTimer); this._timeoutTimer = null; }
+        if (!this._timeoutMs || this.destroyed) return;
+        this._timeoutTimer = setTimeout(function () {
+            self._timeoutTimer = null;
+            self.emit('timeout');
+        }, this._timeoutMs);
+        if (this._timeoutTimer && typeof this._timeoutTimer.unref === 'function')
+            this._timeoutTimer.unref();
+    };
+    TlsSocket.prototype.setTimeout = function (ms, cb) {
+        if (typeof cb === 'function') this.once('timeout', cb);
+        this._timeoutMs = Number(ms) || 0;
+        this._armTimeout();
+        return this;
+    };
 
     function tlsConnect(opts, cb) {
         if (typeof opts === 'number') opts = { port: opts, host: arguments[1] };
@@ -581,6 +603,7 @@
         this.buf = Buffer.alloc(0);
         this.table = new H2Table();
         this.nextId = isServer ? 2 : 1;
+        this.streams = {};
         this._out = [];
         this._ready = isServer;
         this._prefaceDone = !isServer;
@@ -626,7 +649,21 @@
             var id = this.buf.readUInt32BE(5) & 0x7fffffff;
             var payload = this.buf.slice(9, 9 + len);
             this.buf = this.buf.slice(9 + len);
-            this._frame(type, flags, id, payload);
+            // A hostile peer only needs one malformed frame (a bad HPACK
+            // index throws). Malformed frames kill the session, never the
+            // process: the throw must not escape into the native read
+            // callback, where it becomes an uncaught exception.
+            try {
+                this._frame(type, flags, id, payload);
+            } catch (e) {
+                // Emit only when a listener exists: an unhandled 'error'
+                // rethrows on this EventEmitter and would take the process
+                // down from inside the catch.
+                if (this._events && this._events.error && this._events.error.length)
+                    this.emit("error", e);
+                this.socket.destroy();
+                return;
+            }
         }
     };
     H2Session.prototype._frame = function (type, flags, id, payload) {

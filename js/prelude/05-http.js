@@ -153,6 +153,14 @@
         headers.connection = headers.connection || 'close';
         if (!headers['content-length'] && body.length) headers['content-length'] = String(body.length);
         for (var hk in headers) headers[hk] = checkHeader(hk, headers[hk]);
+        // The request line is assembled verbatim; validate the method token
+        // and the path so neither can carry CR/LF/NUL into the wire format.
+        if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(this.method))) {
+            var mErr = new Error('invalid HTTP method'); mErr.code = 'ERR_INVALID_HTTP_TOKEN'; throw mErr;
+        }
+        if (/[\r\n\0]/.test(String(this.path))) {
+            var pErr = new Error('invalid character in HTTP path'); pErr.code = 'ERR_UNESCAPED_CHAR'; throw pErr;
+        }
         var head = this.method + ' ' + this.path + ' HTTP/1.1\r\n';
         for (var h in headers) head += h + ': ' + headers[h] + '\r\n';
         head += '\r\n';
@@ -253,12 +261,29 @@
                     }
                     var size = parseInt(line, 16);
                     state.chunkBuf = state.chunkBuf.slice(nl + 2);
-                    if (!size) { finishResponse(); return; }
+                    if (!size) { state.chunkDone = true; finishResponse(); return; }
+                    // A single announced chunk is bounded: an unbounded size
+                    // would buffer the announced length before pushBody's
+                    // total cap ever sees a byte.
+                    if (size > 8 * 1024 * 1024) {
+                        var ce = new Error("HTTP chunk too large"); ce.code = "ERR_HTTP_BODY_TOO_LARGE"; failResponse(ce); return;
+                    }
                     state.remaining = size;
                     state.chunkPhase = "data";
                 } else {
-                    if (state.chunkBuf.length < state.remaining + 2) return;
+                    if (state.chunkBuf.length < state.remaining + 2) {
+                        // Bound the wait for chunk + CRLF as well (a hostile
+                        // server can announce and drip indefinitely).
+                        if (state.chunkBuf.length > 16 * 1024 * 1024) {
+                            var de = new Error("HTTP chunk too large"); de.code = "ERR_HTTP_BODY_TOO_LARGE"; failResponse(de);
+                        }
+                        return;
+                    }
                     var part = state.chunkBuf.slice(0, state.remaining);
+                    // The two framing bytes must be CR LF, not more data.
+                    if (state.chunkBuf[state.remaining] !== 13 || state.chunkBuf[state.remaining + 1] !== 10) {
+                        var fe = new Error("malformed chunk framing"); fe.code = "ERR_HTTP_INVALID_BODY"; failResponse(fe); return;
+                    }
                     state.chunkBuf = state.chunkBuf.slice(state.remaining + 2);
                     state.remaining = 0;
                     state.chunkPhase = "size";
@@ -319,6 +344,11 @@
             }
             if (state.mode === "length" && state.remaining > 0) {
                 var te = new Error("truncated HTTP body"); te.code = "ERR_HTTP_BODY_TRUNCATED"; failResponse(te); return;
+            }
+            // A chunked body is complete only after the terminal 0-size
+            // chunk; a connection close mid-chunk is truncation, not EOF.
+            if (state.mode === "chunked" && !state.chunkDone) {
+                var ce = new Error("truncated HTTP body"); ce.code = "ERR_HTTP_BODY_TRUNCATED"; failResponse(ce); return;
             }
             finishResponse();
         });
@@ -458,6 +488,14 @@
     ServerResponse.prototype = Object.create(EventEmitter.prototype);
     ServerResponse.prototype.constructor = ServerResponse;
     ServerResponse.prototype.setHeader = function (name, value) {
+        // Server response headers are attacker-reachable through reflected
+        // input; validate exactly like the client path so CRLF cannot enter
+        // the status block (response splitting over keep-alive pipelines).
+        if (Array.isArray(value)) {
+            for (var vi = 0; vi < value.length; vi++) checkHeader(name, value[vi]);
+        } else {
+            checkHeader(name, value);
+        }
         this._headers[String(name).toLowerCase()] = value;
         return this;
     };
@@ -482,6 +520,7 @@
         return this._headers[String(name).toLowerCase()] !== undefined;
     };
     ServerResponse.prototype.appendHeader = function (name, value) {
+        checkHeader(name, value);
         var key = String(name).toLowerCase();
         var current = this._headers[key];
         if (current === undefined) this._headers[key] = value;
@@ -500,8 +539,8 @@
         if (hints) {
             for (var k in hints) {
                 var v = hints[k];
-                if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) head += k + ': ' + v[i] + '\r\n'; }
-                else head += k + ': ' + v + '\r\n';
+                if (Array.isArray(v)) { for (var i = 0; i < v.length; i++) head += k + ': ' + checkHeader(k, v[i]) + '\r\n'; }
+                else head += k + ': ' + checkHeader(k, v) + '\r\n';
             }
         }
         this.socket.write(Buffer.from(head + '\r\n', 'utf8'));
@@ -513,6 +552,13 @@
     });
     ServerResponse.prototype.writeHead = function (status, message, headers) {
         if (typeof message === 'object' && message !== null) { headers = message; message = undefined; }
+        status = Number(status);
+        if (!(status >= 100 && status <= 999)) {
+            var se = new Error('invalid status code: ' + status); se.code = 'ERR_HTTP_INVALID_STATUS_CODE'; throw se;
+        }
+        if (message !== undefined && message !== null && /[\r\n\0]/.test(String(message))) {
+            var me = new Error('invalid characters in status message'); me.code = 'ERR_INVALID_CHAR'; throw me;
+        }
         this.statusCode = status;
         if (message) this.statusMessage = message;
         if (headers) for (var k in headers) this.setHeader(k, headers[k]);
@@ -521,18 +567,23 @@
     ServerResponse.prototype._sendHead = function () {
         if (this._headSent) return;
         var hasLen = this._headers['content-length'] !== undefined;
-        this._chunked = !hasLen;
+        var hasTe = this._headers['transfer-encoding'] !== undefined;
+        this._chunked = !hasLen && !hasTe;
         if (this._chunked) this._headers['transfer-encoding'] = 'chunked';
         this._headers['connection'] = this._headers['connection'] || (this._keepAlive ? 'keep-alive' : 'close');
         if (this._keepAlive && this._headers['keep-alive'] === undefined)
             this._headers['keep-alive'] = 'timeout=' + Math.floor((this._conn ? this._conn.server.keepAliveTimeout : 5000) / 1000);
-        var head = 'HTTP/1.1 ' + this.statusCode + ' ' + (this.statusMessage || '') + '\r\n';
+        // The status message reached us through a constructor or writeHead;
+        // belt-and-braces against any stored CRLF before it hits the wire.
+        var statusText = String(this.statusMessage || '');
+        if (/[\r\n\0]/.test(statusText)) statusText = statusText.replace(/[\r\n\0]/g, ' ');
+        var head = 'HTTP/1.1 ' + this.statusCode + ' ' + statusText + '\r\n';
         for (var k in this._headers) {
             var hv = this._headers[k];
             if (Array.isArray(hv)) {
-                for (var hi = 0; hi < hv.length; hi++) head += k + ': ' + hv[hi] + '\r\n';
+                for (var hi = 0; hi < hv.length; hi++) head += k + ': ' + checkHeader(k, hv[hi]) + '\r\n';
             } else {
-                head += k + ': ' + hv + '\r\n';
+                head += k + ': ' + checkHeader(k, hv) + '\r\n';
             }
         }
         head += '\r\n';
@@ -552,6 +603,16 @@
             this.socket.write(b);
             this.socket.write(Buffer.from('\r\n', 'utf8'));
         } else {
+            // Framing integrity: once a content-length was declared, the
+            // body must not overrun it — extra bytes desync keep-alive
+            // pipelines (the next response is parsed as this body).
+            this._sent = (this._sent || 0) + b.length;
+            var declared = Number(this._headers['content-length']);
+            if (!this._chunked && this._headers['content-length'] !== undefined &&
+                this._sent > declared) {
+                this.destroy();
+                return false;
+            }
             this.socket.write(b);
         }
         return true;
@@ -562,12 +623,27 @@
         var b = chunk === undefined ? null : (typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
         if (!this._headSent) {
             var body = b || Buffer.alloc(0);
-            this._headers['content-length'] = String(body.length);
+            // Only size the response automatically when the app did not
+            // frame it itself: a user-set transfer-encoding must not gain a
+            // conflicting content-length.
+            if (this._headers['transfer-encoding'] === undefined)
+                this._headers['content-length'] = String(body.length);
             this._sendHead();
-            if (body.length && !this._head) this.socket.write(body);
+            if (body.length && !this._head) { this._sent = (this._sent || 0) + body.length; this.socket.write(body); }
         } else {
             if (b && b.length) this.write(b);
             if (this._chunked && !this._head) this.socket.write(Buffer.from('0\r\n\r\n', 'utf8'));
+        }
+        // A declared content-length that was not matched is a framing error:
+        // silently sending fewer bytes hangs the peer mid-pipeline. HEAD
+        // responses never write the body, so the check does not apply.
+        if (!this._head && !this._chunked && this._headers['content-length'] !== undefined &&
+            (this._sent || 0) !== Number(this._headers['content-length'])) {
+            var e = new Error('response content-length mismatch');
+            e.code = 'ERR_HTTP_CONTENT_LENGTH_MISMATCH';
+            this.emit('error', e);
+            this.destroy();
+            return;
         }
         this.finished = true;
         this.writableEnded = true;
@@ -653,6 +729,12 @@
     HttpConnection.prototype._onData = function (chunk) {
         if (this.closed || this.upgraded) return;
         this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
+        // While a handler runs, pipelined bytes have nowhere to go; bound
+        // them so a pipelining client cannot grow memory without limit.
+        if (this.state === 'waiting' && this.buffer.length > 1024 * 1024) {
+            this.destroy();
+            return;
+        }
         this._pump();
     };
     HttpConnection.prototype._pump = function () {
@@ -709,7 +791,17 @@
                     }
                     var clen = Number(headers['content-length'] || 0);
                     if (!(clen >= 0) || clen > 8 * 1024 * 1024) { this.destroy(); break; }
-                    var chunked = String(headers['transfer-encoding'] || '').toLowerCase().indexOf('chunked') >= 0;
+                    // Transfer-Encoding + Content-Length is the classic
+                    // request-smuggling ambiguity behind a CL-preferring
+                    // front end; reject it like llhttp/Node.
+                    if (headers['transfer-encoding'] !== undefined && headers['content-length'] !== undefined) {
+                        this.destroy(); break;
+                    }
+                    // "chunked" must be the final transfer coding, not a
+                    // substring of some other coding name.
+                    var teList = String(headers['transfer-encoding'] || '').toLowerCase().split(',').map(function (s) { return s.trim(); });
+                    var chunked = teList[teList.length - 1] === 'chunked';
+                    if (headers['transfer-encoding'] !== undefined && !chunked) { this.destroy(); break; }
                     this.cur = { req: req, chunks: [], total: 0, remaining: clen, chunked: chunked };
                     if (String(headers['expect'] || '').toLowerCase() === '100-continue')
                         this.socket.write(Buffer.from('HTTP/1.1 100 Continue\r\n\r\n', 'utf8'));

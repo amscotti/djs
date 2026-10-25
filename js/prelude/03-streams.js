@@ -389,12 +389,11 @@
         return cleanup;
     }
 
-    function Stream() { EventEmitter.call(this); }
-    Stream.prototype = Object.create(EventEmitter.prototype);
-    Stream.prototype.constructor = Stream;
-
     // Node's `require('stream')` is the legacy Stream constructor itself,
-    // with the concrete classes attached as properties.
+    // with the concrete classes attached as properties. The constructor and
+    // prototype are declared once at the top of this file — a second
+    // function declaration here would hoist over it and silently drop
+    // Stream.prototype.pipe.
     Stream.Stream = Stream;
     Stream.Readable = Readable;
     Stream.Writable = Writable;

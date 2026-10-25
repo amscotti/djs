@@ -351,7 +351,16 @@
         var out = {};
         seen.push(value, out);
         var keys = Object.keys(value);
-        for (var k = 0; k < keys.length; k++) out[keys[k]] = structuredClone(value[keys[k]], seen);
+        // Define, never assign: a plain assignment through an own "__proto__"
+        // key would rewrite the clone's prototype instead of copying the
+        // property (JSON.parse can produce such keys).
+        for (var k = 0; k < keys.length; k++)
+            Object.defineProperty(out, keys[k], {
+                value: structuredClone(value[keys[k]], seen),
+                writable: true,
+                enumerable: true,
+                configurable: true
+            });
         return out;
     }
 
