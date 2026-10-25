@@ -1,0 +1,7 @@
+short-key RangeError
+short-iv RangeError
+cbc-ok true
+gcm-ok true
+pbkdf2-bound RangeError
+pbkdf2-ok 32
+keygen-bound RangeError

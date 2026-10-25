@@ -1,0 +1,3 @@
+churn 300 ok
+write-destroy ok
+server closed ok

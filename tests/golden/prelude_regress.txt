@@ -1,0 +1,8 @@
+proto-clean true
+own-a true
+stream-pipe true
+instance-pipe true
+cp-symlink true
+cp-target content
+cp-deref true
+done

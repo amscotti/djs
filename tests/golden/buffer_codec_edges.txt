@@ -1,0 +1,14 @@
+encode-non-string TypeError bytes.encode expects a s
+encode-non-string-enc TypeError encoding must be a strin
+encode-bad-enc TypeError unknown encoding
+decode-bad-enc TypeError unknown encoding
+decode-non-view TypeError bytes.decode expects a U
+hex-upper 74 239 true
+hex-partial 1
+hex-odd 1
+u16-1b true 1
+u16-2b true 2
+u16-3b true 3
+u16-odd-tail true
+u16-low-surr true
+u16-trunc-pair true

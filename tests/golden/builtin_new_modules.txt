@@ -1,2 +1,2 @@
 /a/b b.txt true
-linux x64 true
+linux true true

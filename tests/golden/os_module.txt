@@ -1,4 +1,4 @@
-linux x64 Linux
+linux true Linux
 string string true
 true true /dev/null
 true true

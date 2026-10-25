@@ -1,0 +1,8 @@
+len 4
+bytes 104 0 105 0
+astral-len 4
+astral-rt true
+unpaired true
+alias true
+upper true
+isenc true true false

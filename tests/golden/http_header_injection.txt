@@ -1,0 +1,7 @@
+setheader-crlf ERR_INVALID_CHAR
+setheader-crlf-name ERR_INVALID_HTTP_TOKEN
+appendheader-crlf ERR_INVALID_CHAR
+writehead-status ERR_HTTP_INVALID_STATUS_CODE
+writehead-message ERR_INVALID_CHAR
+writeearlyhints-crlf ERR_INVALID_CHAR
+done
