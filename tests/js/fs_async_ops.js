@@ -116,9 +116,19 @@ fs.promises.stat(root).then(function (st) {
     record('promise-stat')('promise-stat-err ' + e.code);
 });
 
-setTimeout(function () {
+// Settle before printing: under load a worker callback can take longer
+// than any fixed deadline, and the golden is order-exact. Poll up to 2 s;
+// a genuinely stuck operation still prints (as a missing line) and fails
+// the golden loudly instead of flaking.
+const deadline = Date.now() + 2000;
+function settle() {
+    if (done < 15 && Date.now() < deadline) {
+        setTimeout(settle, 20);
+        return;
+    }
     for (let i = 0; i < order.length; i++)
-        console.log(lines[order[i]]);
+        console.log(lines[order[i]] === undefined ? order[i] + ' missing' : lines[order[i]]);
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (e) {}
     console.log('steps', done, 'done');
-}, 150);
+}
+setTimeout(settle, 20);
