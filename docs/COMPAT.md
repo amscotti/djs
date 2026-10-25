@@ -234,13 +234,16 @@ prompts per variable before user code runs. `--allow-read=` (an explicit
 empty value) is a startup error instead of a silent whole-category grant;
 the same holds for `-R=`/`-E=`/… and for every `--deny-*=` form. `djs.json`
 boolean values no longer widen: `"deny": false` means "no denies", not
-allow-all, and a `false` allow key means "nothing". `--allow-listen` uses
-host:port matching like `--allow-net` (`*:8080`, `localhost`,
-`*.example.com` now work). The audit log cannot be corrupted by a long
-resource string (a stack overflow), escapes control characters, and fails
-closed at startup. Outbound `tls.connect`/`https` respect `--allow-net`
-(they previously bypassed it), `fs.link` requires write on both ends, and
-`dgram.bind` requires `listen`.
+allow-all, and a `false` allow key means "nothing". A CLI flag for a
+category now **replaces** that category's allow rules from a `-P` set
+(deny rules always merge), instead of silently unioning both.
+`--allow-listen` uses host:port matching like `--allow-net` (`*:8080`,
+`localhost`, `*.example.com` now work). The audit log cannot be corrupted
+by a long resource string (a stack overflow), escapes control characters,
+and fails closed at startup. Outbound `tls.connect`/`https` respect
+`--allow-net` (they previously bypassed it), `fs.link` requires write on
+both ends, `dgram.bind` requires `listen`, and a scoped `--allow-run`
+rejects `LD_*`/`DYLD_*` in a script-supplied child environment.
 
 **TLS.** Certificate verification mode is no longer reset by the ALPN code
 path (`SSL_VERIFY_PEER` used to be silently replaced with
@@ -284,7 +287,11 @@ case-insensitive like Node's; `fetch` honours `AbortSignal`;
 `structuredClone` defines own properties instead of writing through
 `__proto__`; the legacy `stream.Stream` constructor keeps `pipe`;
 `fs.cpSync` copies symlinks as symlinks (`dereference: true` copies
-contents).
+contents). The CJS named-export scanner recognizes `exports['quoted-key']`
+and `module.exports['quoted-key']` assignments (matching cjs-module-lexer),
+no longer treats `==` comparisons as exports, and non-identifier names are
+exposed through string export names in the ESM facade instead of
+generating invalid syntax.
 
 ## fs
 
@@ -400,6 +407,9 @@ contents).
   through `PATH` by `execvp`; a path grant must match that path. `execSync`
   runs `sh`, so either `--allow-run=sh` or `--allow-run=/bin/sh` works.
   Explicit `--deny-run` rules win over `-A` and over either grant.
+  `LD_*`/`DYLD_*` variables in a script-supplied child environment are
+  rejected unless the run grant is unscoped (`-A` or bare `--allow-run`);
+  they would execute native code outside every permission check.
   `cwd` is validated before fork; a missing directory throws `ENOENT`.
 - A signal death reports `status`/`exitCode` `null` and a named
   `signal`/`signalCode` (e.g. `SIGTERM`), for `spawnSync` and for `spawn`'s
