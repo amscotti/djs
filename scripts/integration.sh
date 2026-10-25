@@ -144,6 +144,9 @@ check_stdout "max-file-size-efbig" "EFBIG" env DJS_MAX_FILE_SIZE=8 "$BIN" -A \
     -e "try{require('fs').readFileSync('$TMP/big.bin')}catch(e){console.log(e.code)}"
 check_stdout "max-file-size-junk-defaults" "16" env DJS_MAX_FILE_SIZE=notanumber "$BIN" -A \
     -e "console.log(require('fs').readFileSync('$TMP/big.bin').length)"
+# Overflow falls back to the default cap instead of wrapping.
+check_stdout "max-file-size-overflow-defaults" "16" env DJS_MAX_FILE_SIZE=99999999999999999999 "$BIN" -A \
+    -e "console.log(require('fs').readFileSync('$TMP/big.bin').length)"
 
 # --help drifted from the parser once; every documented flag must be listed.
 for flag in --allow-read --allow-write --allow-env --allow-sys --allow-net \

@@ -9,7 +9,11 @@
 # appends the counts to a TSV log. One awk pass merges everything.
 #
 # Reports two tables:
-#   unittest — what `dub test` (the D unittest blocks) executes alone
+#   unittest — what `dub test` (the D unittest blocks) executes alone.
+#              Known limitation: with a shared druntime the unittest
+#              binary writes .lst files whose counters stay zero, so this
+#              table reads 0% today; the D unittests are instead verified
+#              by `dub test` pass/fail itself.
 #   suite    — what integration.sh + gate-permissions.sh + gate-net.sh drive
 #
 # Usage: scripts/coverage.sh          (takes ~8–10 minutes; rebuilds twice)

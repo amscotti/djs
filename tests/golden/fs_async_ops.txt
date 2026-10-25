@@ -1,0 +1,16 @@
+stat true true
+stat-missing ENOENT
+readdir true true
+readdir-missing ENOENT
+readdir-dirent true true true
+realpath true
+realpath-missing ENOENT
+rename true true
+rename-missing-dir ENOENT
+unlink true
+unlink-missing ENOENT
+write-missing-dir ENOENT
+rm-recursive true
+rm-dir-nonrecursive EISDIR
+promise-stat true
+steps 15 done
