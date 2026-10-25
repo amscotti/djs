@@ -190,8 +190,9 @@ Semantics (chosen to match Deno where it matters):
   the listed resources.
 - `--deny-*` always wins, regardless of order or origin (CLI or config).
 - Absent category = deny (when enforcement is on).
-- `--allow-all` ignores every deny and prompt; it is the explicit "no sandbox"
-  switch.
+- `-A`/`--allow-all` is the explicit "no sandbox" switch — it disables
+  category checks and prompts, but explicit `--deny-*` rules still win
+  over it.
 - `--no-prompt` plus a TTY fails closed; a non-TTY always fails closed.
 - Invalid values (unknown permission name, malformed config) are startup
   errors, never silently widened.

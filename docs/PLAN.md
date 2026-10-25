@@ -246,7 +246,7 @@ dub test
 - [x] Fuzz harness for the C boundary (argument counts/types, malformed modules): 28 cases, clean.
 - [x] Docs: README, ARCHITECTURE, D-GUIDE, COMPAT, BENCH; links resolve; no-phase-refs passes.
 - [x] Package: release binary, `--version`, third-party notices (QuickJS-NG MIT, libuv MIT), deterministic tarball.
-- [x] Copy deliverables to `/mnt/nas/tony/from-hermes/djs/` and note the path in the work log.
+- [x] Archive the release deliverables to the offline storage share and note the path in the work log.
 - [x] Final three-reviewer pass (`docs/reviews/round-2-*.md`); no open critical findings after the fix round.
 
 **Definition of done**
@@ -579,7 +579,7 @@ Append-only. Each entry: date, item, status, evidence (command output path or co
 | 2026-10-21 | Phase 4 hardening | done | `docs/COMPAT.md`, `docs/BENCH.md`, `scripts/fuzz.sh` 28/28 | package + docs + bench complete; panel then run |
 | 2026-10-21 | Release-candidate panel (rounds 2+3 scope) | done | `docs/reviews/round-2-{general,adversarial,architecture}.md`; 36 findings, 13 blockers | all blockers reproduced then fixed |
 | 2026-10-21 | Blocker fixes + regressions | done | integration 60/60, sanitizer 27/27, fuzz 28/28 | require/fs API identity, module-bound require, NUL rejection, cache eviction, JSON.parse, deadline timer, entry root, ABI normalizer, gate honesty |
-| 2026-10-21 | Release candidate (refreshed) | done | tag `v0.1.0`; `dist/djs-v0.1.0-linux-x86_64.tar.gz`; copy at `/mnt/nas/tony/from-hermes/djs/` | 8.1 ms cold start, 7.2 MiB RSS; gate 6/6 |
+| 2026-10-21 | Release candidate (refreshed) | done | tag `v0.1.0`; `dist/djs-v0.1.0-linux-x86_64.tar.gz`; archived to offline storage | 8.1 ms cold start, 7.2 MiB RSS; gate 6/6 |
 | 2026-10-21 | v0.2.0 surface | done | `Buffer`, `path`, `os`, fs rename/copyFile/rm/realpath/recursive mkdir, write encodings, `setImmediate`/`nextTick`, encoded `import.meta.url`, `arrayBuffers` | 67 integration cases, 7 diff cases, soak heap delta 3 KiB |
 | 2026-10-21 | v0.2.0 gates | done | `scripts/diff-node.sh`, `scripts/soak.sh`, gate 8/8 | ASan/LSan 34 fixtures |
 | 2026-10-21 | v0.2.0 review + fix round | done | `docs/reviews/round-3-*.md`, `docs/REVIEWS.md` R3-01…R3-12 | 36 findings; copyFile/readEncodings/arrayBuffers blockers fixed; 70 integration, 37 sanitizer, 7 diff |

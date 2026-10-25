@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="djs" width="220">
+</p>
+
 # DJS
 
 A small, embeddable JavaScript runtime written in **D**, embedding

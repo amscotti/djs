@@ -83,7 +83,12 @@ if [ ! -f "$QJS_DIR/build/libqjs.a" ] || [ "$(cat "$STAMP" 2>/dev/null || true)"
   printf '%s\n' "$WANT_STAMP" > "$STAMP"
 fi
 [ -f "$QJS_DIR/build/libqjs.a" ] || fail "libqjs.a not found after build"
-file "$QJS_DIR/build/libqjs.a" | grep -q 'ar archive' || fail "libqjs.a is not a static archive"
+# `file` is not universally installed; the ar magic is a sufficient check.
+if command -v file >/dev/null 2>&1; then
+    file "$QJS_DIR/build/libqjs.a" | grep -q 'ar archive' || fail "libqjs.a is not a static archive"
+else
+    head -c 8 "$QJS_DIR/build/libqjs.a" | grep -q '!<arch>' || fail "libqjs.a is not a static archive"
+fi
 
 echo "== ABI probe =="
 cat > "$QJS_DIR/build/abi_check.c" <<'EOF'

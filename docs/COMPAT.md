@@ -206,8 +206,12 @@ behaviour; `--deny-*` wins over grants and `-A`.
   `read` grant because it happens before user code and is confined to the
   project root. Computed imports are confined the same way.
 - `os.hostname`/`os.release` need `sys:hostname`/`sys:osRelease`;
-  `os.homedir`/`os.tmpdir` need `env:HOME`/`env:TMPDIR`; `os.cpus` and the
+  `os.homedir` needs `env:HOME`; `os.tmpdir` reads `env:TMPDIR` and falls
+  back to `/tmp` when the grant is missing; `os.cpus` and the
   memory functions need `sys:cpus`/`sys:systemMemoryInfo`.
+- `fs.link` needs the write grant on **both** paths (the new link shares
+  the source inode, so a read-only source must not become writable through
+  the link). `dgram.bind` is gated by `listen`, not `net`.
 - `package.json` set `ignore` rules are currently treated as `deny`; dedicated
   ignore semantics (hide rather than throw) are future work.
 - Prompts are TTY-only; non-TTY or `--no-prompt` fails closed. Async fs denial
@@ -216,6 +220,71 @@ behaviour; `--deny-*` wins over grants and `-A`.
   and records env variable names (never values) on enumeration.
 - The permission check is a seat belt, not a kernel sandbox: native memory
   corruption can bypass it. Landlock is planned separately.
+
+## Hardening (v0.16.4)
+
+A security-driven pass over the permission model, the HTTP/TLS layers and
+the fs workers. Each item has a regression test (`tests/js/*` or
+`scripts/gate-permissions.sh`).
+
+**Permission model.** A TTY prompt can no longer override an explicit
+`--deny-*` rule or a dropped scope, `process.permission.has()` no longer
+prompts/grants/audits as a side effect, and building `process.env` no longer
+prompts per variable before user code runs. `--allow-read=` (an explicit
+empty value) is a startup error instead of a silent whole-category grant;
+the same holds for `-R=`/`-E=`/… and for every `--deny-*=` form. `djs.json`
+boolean values no longer widen: `"deny": false` means "no denies", not
+allow-all, and a `false` allow key means "nothing". `--allow-listen` uses
+host:port matching like `--allow-net` (`*:8080`, `localhost`,
+`*.example.com` now work). The audit log cannot be corrupted by a long
+resource string (a stack overflow), escapes control characters, and fails
+closed at startup. Outbound `tls.connect`/`https` respect `--allow-net`
+(they previously bypassed it), `fs.link` requires write on both ends, and
+`dgram.bind` requires `listen`.
+
+**TLS.** Certificate verification mode is no longer reset by the ALPN code
+path (`SSL_VERIFY_PEER` used to be silently replaced with
+`SSL_VERIFY_NONE` for every connection without an ALPN list).
+`TlsSocket.setTimeout` is a real idle timer, so `headersTimeout`/
+`requestTimeout` bound slowloris clients on HTTPS servers. The server-side
+accept handshake runs with a total 10 s deadline (it used to be unbounded),
+validates that its fd is a socket, and reports failures as thrown errors.
+TLS read/write callback slots are released after firing instead of leaking
+per operation.
+
+**HTTP.** Server response headers, status messages and status codes are
+validated exactly like the client path (`ERR_INVALID_CHAR`,
+`ERR_HTTP_INVALID_STATUS_CODE`) — response splitting through a reflected
+header value is no longer possible. A request carrying both
+`Transfer-Encoding` and `Content-Length` is destroyed (the request-smuggling
+shape), and `chunked` must be the final transfer coding. The client treats
+a chunked body cut mid-chunk as `ERR_HTTP_BODY_TRUNCATED` instead of a
+complete body, caps announced chunk sizes, verifies inter-chunk CRLF, and
+bounds the wait for a partially delivered chunk. Server responses cannot
+desync keep-alive pipelines by over-running a declared `content-length`.
+A malformed HTTP/2 frame destroys that session instead of killing the
+process. Pipelined input is capped while a handler runs.
+
+**fs/workers.** Async fs operations re-verify the identity (device, inode)
+of what the worker actually opened against what the permission check saw;
+a leaf swapped for a symlink between check and open fails closed with
+`EACCES`. Module sources read through a FIFO (or any file whose `fstat`
+size lies) are no longer silently truncated at 8 KiB. `package.json`
+string escapes are decoded for `main`/`type` (a `"main"` written as
+`".\/lib\/x.js"` used to fail resolution).
+
+**crypto.** Cipher key/IV lengths are validated against the cipher before
+OpenSSL reads them (a short key used to read past the buffer inside
+OpenSSL). `pbkdf2` iteration/keylen and RSA modulus parameters are bounded
+(they run uninterruptibly on the loop thread).
+
+**Surface additions.** `process.arch` exists (it was missing entirely);
+`Buffer` implements `utf16le`/`ucs2` in both directions; encoding names are
+case-insensitive like Node's; `fetch` honours `AbortSignal`;
+`structuredClone` defines own properties instead of writing through
+`__proto__`; the legacy `stream.Stream` constructor keeps `pipe`;
+`fs.cpSync` copies symlinks as symlinks (`dereference: true` copies
+contents).
 
 ## fs
 

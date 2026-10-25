@@ -5,7 +5,7 @@
 **Scope:** `BRIEF.md`, `docs/ARCHITECTURE.md`, `docs/D-GUIDE.md`, `docs/PLAN.md`, `docs/PINS.md`, checked against the repo and the pinned toolchain.
 **Versions reviewed (sha256, first 16):** BRIEF `cfd5c2ecd3f7dafc`, ARCHITECTURE `e79da1e479171170`, D-GUIDE `de3849405b2d71e9`, PLAN `ee480ffd632c5d01`, PINS `ba37a2e1534f8b84`.
 
-**Method.** Read all five documents; checked every cheap-to-verify claim against `vendor/quickjs-ng/quickjs.h` at commit `6d46d07d…` (v0.17.0), the installed libuv 1.48, and LDC 1.36.0 / DUB 1.36.0; compiled probes for the D claims and built the documented `dub.json` verbatim. Probe sources are in `/home/ubuntu/.hermes/cache/scratch/generalreview/`.
+**Method.** Read all five documents; checked every cheap-to-verify claim against `vendor/quickjs-ng/quickjs.h` at commit `6d46d07d…` (v0.17.0), the installed libuv 1.48, and LDC 1.36.0 / DUB 1.36.0; compiled probes for the D claims and built the documented `dub.json` verbatim. Probe sources were kept in a scratch directory during the review.
 
 **What checks out** (so the fixer does not re-litigate it): the `JSValue` 16-byte layout and the ownership paraphrase match `quickjs.h` exactly on x86_64 (§6.1/§6.2); `JS_EnqueueJob` **is** exported (header line 1247), so PLAN §5's open question is already answered; `JS_NewCClosure` exists with the advertised shape; the CVE cited in §11 is real (CVE-2026-37630, QuickJS-NG 0.12.1, `js_mapped_arguments_mark`); LDC 1.36.0 / DUB 1.36.0 / libuv 1.48.0 / Ninja 1.11.1 match `PINS.md`; `dub test` correctly excludes `mainSourceFile`, so the executable+test split works.
 

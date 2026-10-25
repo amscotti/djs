@@ -156,7 +156,7 @@ One allocation per process, so cosmetic for the CLI — but this is an embeddabl
 $ ./djs t_batch.js ; echo exit=$?
 t1 throwing
 Uncaught Error: first timer
-    at <anonymous> (/home/ubuntu/.hermes/cache/scratch/t_batch.js:1:58)
+    at <anonymous> (scratch/t_batch.js:1:58)
     ...
 t2 ran after fatal
 t3 ran after fatal

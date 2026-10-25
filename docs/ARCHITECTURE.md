@@ -1,6 +1,6 @@
 # DJS Architecture
 
-**Status:** v0.16.2 · **Scope:** the runtime defined in `BRIEF.md` plus the
+**Status:** v0.16.4 · **Scope:** the runtime defined in `BRIEF.md` plus the
 v0.2–v0.16 surface · **Pins:** `docs/PINS.md` · Section headings that name an
 older release mark when that mechanism landed; the descriptions are current.
 
@@ -341,7 +341,8 @@ descriptor, and watches it with a `uv_poll` handle. The poll callback owns the
 state machine: connect completion (`SO_ERROR`), reads, and queued writes.
 `net.Socket` in the prelude is an `EventEmitter` over those callbacks.
 
-Deliberate limits: DNS is blocking and lives on the loop thread; writes are
+Deliberate limits: DNS is blocking in name resolution only through the
+threadpool-backed `getaddrinfo` (`uv_getaddrinfo`); writes are
 queued and drained on writable events but a single `send` can still perform
 work in the callback; there is no TLS, no socket server and no backpressure
 beyond one queued buffer. `http` and `fetch` are prelude parsers over this
