@@ -5,7 +5,7 @@ completion and one streamed completion.
 
 ```bash
 npm install
-export DEEPSEEK_API_KEY=...        # from ~/.hermes/.env or your own account
+export DEEPSEEK_API_KEY=...        # from your DeepSeek account
 ../../djs -A chat.js
 ```
 
