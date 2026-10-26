@@ -217,3 +217,12 @@ gate-sanitize ok 2026-10-25T20:58:40Z cases=108 sanitizer=clean
 sanitize ok 2026-10-25T20:58:40Z
 gate-sanitize ok 2026-10-25T21:39:02Z cases=108 sanitizer=clean
 sanitize ok 2026-10-25T21:39:02Z
+sanitize skipped 2026-10-26T01:26:02Z (macOS ASan config pending)
+sanitize skipped 2026-10-26T01:27:30Z (macOS ASan config pending)
+sanitize skipped 2026-10-26T01:28:46Z (macOS ASan config pending)
+gate-sanitize ok 2026-10-26T01:26:03Z cases=108 sanitizer=clean
+sanitize ok 2026-10-26T01:26:03Z
+gate-sanitize ok 2026-10-26T01:27:41Z cases=108 sanitizer=clean
+sanitize ok 2026-10-26T01:27:41Z
+gate-sanitize ok 2026-10-26T01:28:58Z cases=108 sanitizer=clean
+sanitize ok 2026-10-26T01:28:58Z
