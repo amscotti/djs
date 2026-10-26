@@ -226,3 +226,18 @@ gate-sanitize ok 2026-10-26T01:27:41Z cases=108 sanitizer=clean
 sanitize ok 2026-10-26T01:27:41Z
 gate-sanitize ok 2026-10-26T01:28:58Z cases=108 sanitizer=clean
 sanitize ok 2026-10-26T01:28:58Z
+gate-sanitize ok 2026-10-26T01:51:22Z cases=108 sanitizer=asan
+gate-sanitize ok 2026-10-26T01:54:04Z cases=114 sanitizer=asan
+gate-sanitize ok 2026-10-26T01:55:23Z cases=114 sanitizer=asan
+sanitize ok 2026-10-26T01:55:23Z
+gate-sanitize ok 2026-10-26T01:57:49Z cases=114 sanitizer=asan
+sanitize ok 2026-10-26T01:57:49Z
+gate-sanitize ok 2026-10-26T02:00:03Z cases=114 sanitizer=asan
+sanitize ok 2026-10-26T02:00:03Z
+gate-sanitize ok 2026-10-26T01:53:54Z cases=114 sanitizer=asan+lsan
+gate-sanitize ok 2026-10-26T01:55:10Z cases=114 sanitizer=asan+lsan
+sanitize ok 2026-10-26T01:55:10Z
+gate-sanitize ok 2026-10-26T01:57:38Z cases=114 sanitizer=asan+lsan
+sanitize ok 2026-10-26T01:57:38Z
+gate-sanitize ok 2026-10-26T01:59:50Z cases=114 sanitizer=asan+lsan
+sanitize ok 2026-10-26T01:59:50Z
