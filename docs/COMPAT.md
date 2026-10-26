@@ -162,6 +162,10 @@ and `rows` come from the `COLUMNS`/`LINES` environment variables, defaulting to
   and `arrayBuffers`. `heapUsed` counts the QuickJS heap; `arrayBuffers` is the
   exact live ArrayBuffer byte count (QuickJS carries a small accounting patch)
   and `external` reports the same total.
+- `process.chdir(path)` is implemented with Node's `errno`/`code`/`syscall`
+  error shape and a real `TypeError`/`ERR_INVALID_ARG_TYPE` for non-strings.
+  Relative `--allow-read`/`--allow-write` rules are anchored to their original
+  directory before the cwd changes, so a grant never follows a later chdir.
 - `process.cpuUsage()`, `process.umask()`, `process.hrtime()` (and
   `hrtime.bigint()`), `process.uptime()` and `process.kill(pid, signal)` are
   implemented (v0.11.0). `kill` takes names or numbers, needs the `sys:kill`
@@ -381,8 +385,11 @@ following are the current platform differences:
   `setNoDelay`/`setKeepAlive` are no-ops and there is no connect timeout or
   half-close state machine. The table holds 128 sockets and 8 listeners. TLS is
   a separate module (`tls`), not a `Socket` upgrade.
-- `dns.lookup` uses a blocking `getaddrinfo` and returns IPv4 or IPv6 (family
-  6 for `::1`). The `resolve*` family is a DNS packet client over UDP and
+- `dns.lookup` uses `getaddrinfo` and supports `{family: 0|4|6}`, `{all:true}`
+  (an array of `{address, family}`), `{hints}`, and `order`/`verbatim`
+  (`verbatim`, `ipv4first`, `ipv6first`); the default is the resolver's
+  verbatim order, as in Node. Invalid options throw synchronously with
+  `ERR_INVALID_ARG_VALUE`. The one-shot form returns `(address, family)`. The `resolve*` family is a DNS packet client over UDP and
   honours `setServers`/`getServers` (A/AAAA included, v0.16.2; they used to go
   through `getaddrinfo` and ignore the configured servers): `resolve`,
   `resolve4`, `resolve6`, `resolveMx`, `resolveTxt`, `resolveSrv`,
@@ -806,9 +813,11 @@ context. This is a deliberate compatibility limit, not a pending bug.
   FSEvents/kqueue on macOS. `change` covers content changes and `rename`
   create/delete/move; the affected filename is relative to the watched path.
 - `FSWatcher.close()` stops the watch and emits `close`; `ref`/`unref` and
-  `persistent:false` follow Node. `options.recursive` uses one native FSEvents
-  stream on macOS and a per-directory walk on Linux, which prunes watchers for
-  directories that disappear.
+  `persistent:false` follow Node. A libuv fs-event error is delivered as an
+  `'error'` event and closes the watcher, matching Node. `options.recursive`
+  uses one native FSEvents stream on macOS and a per-directory walk on Linux;
+  the walk prunes watchers for directories that disappear and rebinds a path
+  recreated with a new inode.
 - `fs.watchFile`/`fs.unwatchFile` poll with `interval` (default 5007 ms) and
   report the previous/current `Stats`.
 

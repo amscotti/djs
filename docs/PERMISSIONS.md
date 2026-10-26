@@ -421,10 +421,12 @@ single-threaded (Landlock is per-thread before ABI 8). Fail closed with exit 2
 and a clear diagnostic when the kernel lacks Landlock; never silently degrade.
 Because rules are irreversible, kernel sandboxing and TTY prompts are mutually
 exclusive; `process.permission.drop()` only narrows the in-process policy.
-Known gaps to document: no `stat`/`access`/`chdir` filtering, no env, no
-`uname`/affinity control, pre-opened fds exempt; and `memoryUsage()` must stop
-reading `/proc/self/statm` (use `getrusage` or sample before restricting)
-rather than allowlisting `/proc/self`, which would re-expose `environ`.
+Known gaps to document: no `stat`/`access` filtering, no env, no
+`uname`/affinity control, pre-opened fds exempt. `process.chdir` is allowed
+(Node parity) but anchors relative read/write rules to their original
+directory before changing cwd, so a scoped grant cannot move with the process.
+`memoryUsage()` uses libuv's platform RSS call rather than reading
+`/proc/self/statm`, so the sandbox does not need to re-expose `/proc/self`.
 
 Effort: ~350–500 lines of D in a new `src/djs/sandbox.d` plus ~40 lines of CLI
 parsing and ~200–300 lines of tests, roughly one week; no new dependency, no
