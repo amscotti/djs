@@ -1,3 +1,4 @@
 rss-positive true
 rss-close true
 rss-under-total true
+rss-current true
