@@ -2522,10 +2522,10 @@ private void watchUnlink(WatchSlot* w) @nogc nothrow
     w.next = null;
 }
 
-private WatchSlot* watchFind(int id) @nogc nothrow
+private WatchSlot* watchFind(Runtime* rt, int id) @nogc nothrow
 {
     for (WatchSlot* w = watchHead; w !is null; w = w.next)
-        if (w.id == id) return w;
+        if (w.rt is rt && w.id == id) return w;
     return null;
 }
 
@@ -2557,17 +2557,22 @@ private extern(C) void watchEventCb(uv_fs_event_t* h, const(char)* filename,
                                     int events, int status) nothrow @nogc
 {
     WatchSlot* w = cast(WatchSlot*) uv_handle_get_data(cast(uv_handle_t*) h);
-    if (w is null || w.closing || status < 0)
+    if (w is null || w.closing || status < 0 || w.rt is null)
+        return;
+    // Same turn-ending rule as every other completion path: after exit() or
+    // a fatal callback, do not run more user JS from a late event.
+    Runtime* rt = w.rt;
+    if (rt.shuttingDown || rt.failed || rt.exitRequested)
         return;
     JSValue[2] argv = void;
     const(char)* ev = (events & UV_RENAME) != 0 ? "rename" : "change";
-    argv[0] = JS_NewStringLen(w.rt.ctx, ev, strlen(ev));
+    argv[0] = JS_NewStringLen(rt.ctx, ev, strlen(ev));
     argv[1] = (filename !is null && filename[0] != 0)
-        ? JS_NewStringLen(w.rt.ctx, filename, strlen(filename))
+        ? JS_NewStringLen(rt.ctx, filename, strlen(filename))
         : jsNull();
-    watchCall(w.rt, w.cb, 2, argv.ptr);
-    JS_FreeValue(w.rt.ctx, argv[0]);
-    if (!jsIsNull(argv[1])) JS_FreeValue(w.rt.ctx, argv[1]);
+    watchCall(rt, w.cb, 2, argv.ptr);
+    JS_FreeValue(rt.ctx, argv[0]);
+    if (!jsIsNull(argv[1])) JS_FreeValue(rt.ctx, argv[1]);
 }
 
 private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) nothrow @nogc
@@ -2641,7 +2646,8 @@ private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int arg
 {
     int id = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &id)) return throwTypeError(ctx, "watchClose requires an id");
-    WatchSlot* w = watchFind(id);
+    Runtime* rt = runtimeOf(ctx);
+    WatchSlot* w = rt !is null ? watchFind(rt, id) : null;
     if (w is null) return throwTypeError(ctx, "invalid watcher");
     // close() is idempotent. The slot is unlinked immediately so a second
     // call cannot find it and uv_close the same handle twice.
@@ -2667,7 +2673,8 @@ private extern(C) JSValue jsWatchSetRefImpl(JSContext* ctx, JSValueConst, int ar
     int id = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &id)) return throwTypeError(ctx, "watchSetRef requires an id");
     bool on = argc >= 2 && JS_ToBool(ctx, argv[1]) > 0;
-    WatchSlot* w = watchFind(id);
+    Runtime* rt = runtimeOf(ctx);
+    WatchSlot* w = rt !is null ? watchFind(rt, id) : null;
     if (w !is null && w.ev !is null)
     {
         if (on) uv_ref(cast(uv_handle_t*) w.ev);

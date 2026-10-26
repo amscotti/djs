@@ -1,5 +1,6 @@
 missing-error ENOENT
 create-event true rename
+write-event true
 rename-event true
 delete-event true
 file-event true change

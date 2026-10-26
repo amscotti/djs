@@ -414,11 +414,11 @@
         __djs.fs.renameStart(from, to, function (err) { callback(err || null); });
     }
 
-    // These numeric values are passed straight to open(2), so they must match
-    // the host's <fcntl.h>/<copyfile.h>. Darwin's flag encoding differs from
-    // Linux's (O_CREAT is 512, not 64; O_CLOEXEC is 0x01000000).
+    // open(2) flags are host ABI (O_CREAT is 512 on macOS, 64 on Linux).
+    // COPYFILE_EXCL is different: Node/libuv expose the portable value 1 on
+    // every platform and copyFile maps it to the native copyfile flag.
     var IS_DARWIN = __djs.process.platform() === 'darwin';
-    var COPYFILE_EXCL = IS_DARWIN ? 131072 : 1;
+    var COPYFILE_EXCL = 1;
 
     function copyFileSync(src, dest, flags) {
         __djs.fs.copyFileSync(src, dest, !!((flags || 0) & COPYFILE_EXCL));
@@ -458,13 +458,16 @@
         if (!this._closed && this._id) __djs.fs.watchSetRef(this._id, false);
         return this;
     };
-    function RecursiveWatcher(root, listener) {
+    function RecursiveWatcher(root, listener, persistent) {
         EventEmitter.call(this);
-        this._root = String(root);
+        // Canonicalize the root: native watches and path.join produce
+        // normalized absolute keys, so "./src" or "src/" must not leak into
+        // relative-name math or the prune prefix.
+        this._root = pathModule.resolve(String(root));
         this._listener = listener || null;
         this._closed = false;
         this._watched = Object.create(null);
-        this._ref = true;
+        this._ref = persistent !== false;
         this._addDir(this._root);
     }
     RecursiveWatcher.prototype = Object.create(EventEmitter.prototype);
@@ -474,18 +477,26 @@
         var self = this;
         var id = __djs.fs.watchStart(dir, function (type, filename) {
             if (self._closed) return;
-            var full = filename ? pathModule.join(dir, filename) : dir;
-            var rel = full === self._root ? "" : full.slice(self._root.length + 1);
+            // libuv replaces a nameless self event with basename(dir), which
+            // would otherwise become dir/dir. Resolve self events to dir.
+            var selfEvent = !filename || filename === pathModule.basename(dir);
+            var full = selfEvent ? dir : pathModule.join(dir, filename);
+            var rel = pathModule.relative(self._root, full);
             self.emit('change', type, rel);
             if (self._listener) self._listener(type, rel);
             if (type === 'rename') {
                 var st = null;
-                try { st = statSync(full); } catch (e) {}
+                try {
+                    st = statSync(full);
+                } catch (e) {
+                    // Deleted/renamed away: prune this subtree. Other errors
+                    // (EACCES) do not prove the inode is gone; keep watching.
+                    if (e && e.code === 'ENOENT') self._removeDir(full);
+                    return;
+                }
                 if (st && st.isDirectory()) {
-                    self._addDir(full);
-                } else if (!st) {
-                    // Renamed away or deleted: stop watching it (and any
-                    // descendants) instead of keeping dead watchers.
+                    try { self._addDir(full); } catch (e) {}
+                } else {
                     self._removeDir(full);
                 }
             }
@@ -544,18 +555,19 @@
         if (typeof options === 'function') { listener = options; options = {}; }
         if (typeof listener !== 'function') throw new TypeError('listener must be a function');
         var recursive = !!(options && options.recursive);
+        var persistent = !options || options.persistent !== false;
         // macOS FSEvents supports recursive watching natively; one handle
         // covers the whole tree. Linux/inotify has no recursive primitive, so
         // the prelude walks the tree and adds a watcher per directory.
         if (recursive && __djs.process.platform() !== 'darwin')
-            return new RecursiveWatcher(String(path), listener);
+            return new RecursiveWatcher(String(path), listener, persistent);
         var self = new FSWatcher(listener);
         self._id = __djs.fs.watchStart(String(path), function (type, filename) {
             if (self._closed) return;
             self.emit('change', type, filename);
             if (self._listener) self._listener(type, filename);
         }, recursive);
-        if (!self._ref) __djs.fs.watchSetRef(self._id, false);
+        if (!persistent) self.unref();
         return self;
     }
 

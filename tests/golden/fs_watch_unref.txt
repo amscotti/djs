@@ -1,1 +1,2 @@
+unref-event true
 unref-exited

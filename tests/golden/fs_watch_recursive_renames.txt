@@ -1,2 +1,3 @@
-rename-away-still-watching true true
+rename-away-still-watching true
+rename-away-moved-quiet true
 done
