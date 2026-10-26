@@ -74,6 +74,12 @@ jobs:
             ldc dub \
             libuv1-dev libssl-dev libbrotli-dev
 
+      - name: Prefer the pinned distribution toolchain
+        # The runner image puts newer tools in /usr/local/bin (for example
+        # Ninja 1.13.2). Put the apt-installed LDC/DUB/Ninja first so the
+        # versions in docs/PINS.md are the ones bootstrap.sh actually sees.
+        run: echo "/usr/bin" >> "$GITHUB_PATH"
+
       - name: Cache the pinned QuickJS build
         uses: actions/cache@v4
         with:
