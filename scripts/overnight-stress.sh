@@ -17,6 +17,13 @@ cd "$ROOT"
 
 HOURS="${1:?usage: overnight-stress.sh <hours> [label]}"
 LABEL="${2:-run}"
+case "$HOURS" in
+    ''|*[!0-9]*|0) echo "overnight-stress: hours must be a positive integer" >&2; exit 2 ;;
+esac
+case "$LABEL" in
+    *[!A-Za-z0-9._-]*|'') echo "overnight-stress: label may contain only [A-Za-z0-9._-]" >&2; exit 2 ;;
+esac
+[ -x "$ROOT/djs" ] || { echo "overnight-stress: $ROOT/djs is missing" >&2; exit 2; }
 END=$(( $(date +%s) + HOURS * 3600 ))
 DIR="$ROOT/.dub/overnight"
 mkdir -p "$DIR"

@@ -24,6 +24,7 @@ fs.writeFileSync(dir + "/a/mode.txt", "m", { mode: 0o600 });
 console.log("write-mode", (fs.statSync(dir + "/a/mode.txt").mode & 0o777).toString(8));
 fs.copyFileSync(dir + "/a/mode.txt", dir + "/a/mode2.txt");
 console.log("copy-mode", (fs.statSync(dir + "/a/mode2.txt").mode & 0o777).toString(8));
+console.log("copyfile-excl-value", fs.constants.COPYFILE_EXCL === 1);
 fs.writeFileSync(dir + "/a/enc.txt", "hello");
 console.log("hex", fs.readFileSync(dir + "/a/enc.txt", "hex"), fs.readFileSync(dir + "/a/enc.txt", "base64"));
 fs.writeFileSync(dir + "/a/enc.bin", "é", "latin1");

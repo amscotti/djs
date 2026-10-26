@@ -8,6 +8,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 . "$ROOT/scripts/lib-portable.sh"
+if [ -z "$DJS_TIMEOUT" ]; then
+    echo "integration: timeout utility required (brew install coreutils)" >&2
+    exit 1
+fi
 BIN="$ROOT/djs"
 VERSION="v$(tr -d '[:space:]' < "$ROOT/VERSION")"
 TMP="$ROOT/tests/tmp"
@@ -144,11 +148,7 @@ check_stdout "eval-microtask-timer" "$(printf 'm\nt')" \
 check_stdout "eval-version" "$VERSION" "$BIN" --version
 check_exit "process-exit-code" 5 "$BIN" -e 'process.exit(5)'
 check_exit "exit-code-wins" 3 "$BIN" -e 'Promise.reject(new Error("x")); process.exit(3)'
-if [ -z "$DJS_TIMEOUT" ]; then
-    bad "timeout (no timeout utility installed; brew install coreutils)"
-else
-    check_exit "timeout" 1 "$BIN" --timeout 100 tests/js/fixtures/infinite.js
-fi
+check_exit "timeout" 1 "$BIN" --timeout 100 tests/js/fixtures/infinite.js
 check_exit "memory-limit" 1 "$BIN" --memory-limit 8388608 tests/js/fixtures/oom.js
 
 # DJS_MAX_FILE_SIZE caps reads (documented env override for the 512 MiB
@@ -161,6 +161,29 @@ check_stdout "max-file-size-junk-defaults" "16" env DJS_MAX_FILE_SIZE=notanumber
 # Overflow falls back to the default cap instead of wrapping.
 check_stdout "max-file-size-overflow-defaults" "16" env DJS_MAX_FILE_SIZE=99999999999999999999 "$BIN" -A \
     -e "console.log(require('fs').readFileSync('$TMP/big.bin').length)"
+
+# Linux recursive walk: deleting the watched root must prune every watcher,
+# so the process exits without close(). Native FSEvents keeps its handle, so
+# this is Linux-only.
+if [ "$DJS_PLAT" = linux ]; then
+    if tmo 6 "$BIN" -A tests/js/fixtures/watch_root_delete.js >"$TMP/rootdel.out" 2>&1; then
+        ok "watch-root-delete"
+    else
+        bad "watch-root-delete (watchers kept the loop alive)"
+        sed -n '1,10p' "$TMP/rootdel.out" >&2
+    fi
+else
+    ok "watch-root-delete-skipped"
+fi
+# A relative recursive root ("dir") must report relative filenames, not the
+# corrupt slice that "./dir" produced.
+relOut="$(cd "$TMP" && tmo 10 "$BIN" -A "$ROOT/tests/js/fixtures/watch_relative.js" "rel-$$-$RANDOM" 2>&1)"
+if printf '%s' "$relOut" | grep -q "relative-name true a.txt"; then
+    ok "watch-relative-root"
+else
+    bad "watch-relative-root"
+    printf '%s\n' "$relOut" >&2
+fi
 
 # --help drifted from the parser once; every documented flag must be listed.
 # Capture it once: piping into `grep -q` makes grep exit early and can race
@@ -237,10 +260,11 @@ else
     sed -n '1,5p' "$sigOut" >&2
 fi
 
-# TLS clients against loopback openssl servers: self-signed (must fail
-# verification with Node's code), CA-signed with a DNS-only SAN (altname
-# failure and untrusted-CA failure), and CA-signed with DNS+IP SANs (trusted
-# success). Config files instead of -addext: macOS ships LibreSSL.
+# TLS clients against loopback openssl servers. Generated fixtures cover the
+# verification matrix: self-signed, untrusted CA, DNS-only SAN (altname),
+# trusted DNS+IP SAN, wildcard one-label vs two-labels vs a TLD wildcard,
+# CN-only fallback, trailing-dot SAN and an empty servername (uses the host).
+# Config files instead of -addext: macOS ships LibreSSL.
 tlsDir="$TMP/tls"
 mkdir -p "$tlsDir"
 cat > "$tlsDir/self.cnf" <<'EOF'
@@ -253,7 +277,21 @@ CN = localhost
 [v3]
 subjectAltName = DNS:localhost,IP:127.0.0.1
 EOF
-cat > "$tlsDir/dns.cnf" <<'EOF'
+for prof in dns san wild tld dot; do
+    case "$prof" in
+        dns)  san_line="DNS:localhost" ;;
+        san)  san_line="DNS:localhost,IP:127.0.0.1" ;;
+        wild) san_line="DNS:*.example.com" ;;
+        tld)  san_line="DNS:*.com" ;;
+        dot)  san_line="DNS:localhost." ;;
+    esac
+    {
+        printf '[req]\ndistinguished_name = dn\nreq_extensions = v3\nprompt = no\n'
+        printf '[dn]\nCN = localhost\n'
+        printf '[v3]\nsubjectAltName = %s\nbasicConstraints = CA:FALSE\n' "$san_line"
+    } > "$tlsDir/$prof.cnf"
+done
+cat > "$tlsDir/cn.cnf" <<'EOF'
 [req]
 distinguished_name = dn
 req_extensions = v3
@@ -261,18 +299,6 @@ prompt = no
 [dn]
 CN = localhost
 [v3]
-subjectAltName = DNS:localhost
-basicConstraints = CA:FALSE
-EOF
-cat > "$tlsDir/san.cnf" <<'EOF'
-[req]
-distinguished_name = dn
-req_extensions = v3
-prompt = no
-[dn]
-CN = localhost
-[v3]
-subjectAltName = DNS:localhost,IP:127.0.0.1
 basicConstraints = CA:FALSE
 EOF
 tlsOk=1
@@ -280,7 +306,7 @@ openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/key.pem" -out "$tlsDir/cert.
     -days 1 -nodes -config "$tlsDir/self.cnf" >/dev/null 2>&1 || tlsOk=0
 openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/ca.key" -out "$tlsDir/ca.pem" \
     -days 1 -nodes -subj "/CN=DJS Test CA" >/dev/null 2>&1 || tlsOk=0
-for prof in dns san; do
+for prof in dns san wild tld dot cn; do
     openssl req -new -newkey rsa:2048 -keyout "$tlsDir/$prof.key" -out "$tlsDir/$prof.csr" \
         -nodes -config "$tlsDir/$prof.cnf" >/dev/null 2>&1 || tlsOk=0
     openssl x509 -req -in "$tlsDir/$prof.csr" -CA "$tlsDir/ca.pem" -CAkey "$tlsDir/ca.key" \
@@ -288,30 +314,63 @@ for prof in dns san; do
         -extfile "$tlsDir/$prof.cnf" -extensions v3 >/dev/null 2>&1 || tlsOk=0
 done
 if [ "$tlsOk" = 1 ]; then
-    tlsPort=$((18443 + RANDOM % 900))
-    tlsPort2=$((tlsPort + 1))
-    tlsPort3=$((tlsPort + 2))
-    openssl s_server -accept "$tlsPort" -cert "$tlsDir/cert.pem" -key "$tlsDir/key.pem" \
-        -www -quiet >/dev/null 2>&1 &
-    tlsPid=$!
-    openssl s_server -accept "$tlsPort2" -cert "$tlsDir/dns.pem" -key "$tlsDir/dns.key" \
-        -www -quiet >/dev/null 2>&1 &
-    tlsPid2=$!
-    openssl s_server -accept "$tlsPort3" -cert "$tlsDir/san.pem" -key "$tlsDir/san.key" \
-        -www -quiet >/dev/null 2>&1 &
-    tlsPid3=$!
-    sleep 0.5
-    tlsOut="$("$BIN" -A tests/js/fixtures/tls_client.js "$tlsPort" 2>&1)"
-    tlsExtra="$(NODE_EXTRA_CA_CERTS="$tlsDir/ca.pem" "$BIN" -A \
-        tests/js/fixtures/tls_extra_ca.js "$tlsPort3" 2>&1)"
-    tlsNoExtra="$("$BIN" -A tests/js/fixtures/tls_extra_ca.js "$tlsPort3" 2>&1)"
-    tlsSslFile="$(SSL_CERT_FILE="$tlsDir/ca.pem" "$BIN" -A \
-        tests/js/fixtures/tls_extra_ca.js "$tlsPort3" 2>&1)"
-    tlsUntrusted="$("$BIN" -A tests/js/fixtures/tls_code.js "$tlsPort2" 2>&1)"
-    tlsAltname="$(NODE_EXTRA_CA_CERTS="$tlsDir/ca.pem" "$BIN" -A \
-        tests/js/fixtures/tls_code.js "$tlsPort2" 2>&1)"
-    kill "$tlsPid" "$tlsPid2" "$tlsPid3" 2>/dev/null
-    wait "$tlsPid" "$tlsPid2" "$tlsPid3" 2>/dev/null
+    tlsPort=$((18443 + RANDOM % 800))
+    tlsPortSelf=$tlsPort
+    tlsPortDns=$((tlsPort + 1))
+    tlsPortSan=$((tlsPort + 2))
+    tlsPortWild=$((tlsPort + 3))
+    tlsPortTld=$((tlsPort + 4))
+    tlsPortDot=$((tlsPort + 5))
+    tlsPortCn=$((tlsPort + 6))
+    tlsPids=""
+    tls_cleanup() {
+        [ -n "$tlsPids" ] && kill $tlsPids 2>/dev/null
+        [ -n "$tlsPids" ] && wait $tlsPids 2>/dev/null
+        tlsPids=""
+    }
+    trap tls_cleanup EXIT
+    openssl s_server -accept "$tlsPortSelf" -cert "$tlsDir/cert.pem" -key "$tlsDir/key.pem" \
+        -www -quiet >/dev/null 2>&1 & tlsPid=$!
+    openssl s_server -accept "$tlsPortDns" -cert "$tlsDir/dns.pem" -key "$tlsDir/dns.key" \
+        -www -quiet >/dev/null 2>&1 & tlsPid2=$!
+    openssl s_server -accept "$tlsPortSan" -cert "$tlsDir/san.pem" -key "$tlsDir/san.key" \
+        -www -quiet >/dev/null 2>&1 & tlsPid3=$!
+    openssl s_server -accept "$tlsPortWild" -cert "$tlsDir/wild.pem" -key "$tlsDir/wild.key" \
+        -www -quiet >/dev/null 2>&1 & tlsPid4=$!
+    openssl s_server -accept "$tlsPortTld" -cert "$tlsDir/tld.pem" -key "$tlsDir/tld.key" \
+        -www -quiet >/dev/null 2>&1 & tlsPid5=$!
+    openssl s_server -accept "$tlsPortDot" -cert "$tlsDir/dot.pem" -key "$tlsDir/dot.key" \
+        -www -quiet >/dev/null 2>&1 & tlsPid6=$!
+    openssl s_server -accept "$tlsPortCn" -cert "$tlsDir/cn.pem" -key "$tlsDir/cn.key" \
+        -www -quiet >/dev/null 2>&1 & tlsPid7=$!
+    tlsPids="$tlsPid $tlsPid2 $tlsPid3 $tlsPid4 $tlsPid5 $tlsPid6 $tlsPid7"
+    sleep 0.7
+    cleanTlsEnv="env -u NODE_EXTRA_CA_CERTS -u SSL_CERT_FILE -u SSL_CERT_DIR"
+    tlsOut="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_client.js "$tlsPortSelf" 2>&1)"
+    tlsExtra="$($cleanTlsEnv NODE_EXTRA_CA_CERTS="$tlsDir/ca.pem" "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPortSan" 2>&1)"
+    tlsNoExtra="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_extra_ca.js "$tlsPortSan" 2>&1)"
+    tlsBadExtra="$($cleanTlsEnv NODE_EXTRA_CA_CERTS=/no/such/file "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPortSan" 2>&1)"
+    tlsSslFile="$($cleanTlsEnv SSL_CERT_FILE="$tlsDir/ca.pem" "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPortSan" 2>&1)"
+    tlsUntrusted="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_code.js "$tlsPortDns" 2>&1)"
+    tlsAltname="$($cleanTlsEnv NODE_EXTRA_CA_CERTS="$tlsDir/ca.pem" "$BIN" -A \
+        tests/js/fixtures/tls_code.js "$tlsPortDns" 2>&1)"
+    tlsWildOk="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_servername.js \
+        "$tlsPortWild" a.example.com "$tlsDir/ca.pem" 2>&1)"
+    tlsWildDeep="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_servername.js \
+        "$tlsPortWild" a.b.example.com "$tlsDir/ca.pem" 2>&1)"
+    tlsWildTld="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_servername.js \
+        "$tlsPortTld" evil.com "$tlsDir/ca.pem" 2>&1)"
+    tlsCn="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_servername.js \
+        "$tlsPortCn" localhost "$tlsDir/ca.pem" 2>&1)"
+    tlsDot="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_servername.js \
+        "$tlsPortDot" localhost "$tlsDir/ca.pem" 2>&1)"
+    tlsEmpty="$($cleanTlsEnv "$BIN" -A tests/js/fixtures/tls_servername.js \
+        "$tlsPortSan" - "$tlsDir/ca.pem" 2>&1)"
+    tls_cleanup
+    trap - EXIT
     if printf '%s' "$tlsOut" | grep -q "https 200 true" &&
        printf '%s' "$tlsOut" | grep -q "verify DEPTH_ZERO_SELF_SIGNED_CERT" &&
        printf '%s' "$tlsOut" | grep -q "fetch true"; then
@@ -332,6 +391,15 @@ if [ "$tlsOk" = 1 ]; then
         bad "tls-extra-ca-not-default"
         printf '%s\n' "$tlsNoExtra" >&2
     fi
+    # The bad file is ignored (warning) and the default store still verifies:
+    # the private CA is untrusted, not "could not load NODE_EXTRA_CA_CERTS".
+    if printf '%s' "$tlsBadExtra" | grep -q "extra-ca-err UNABLE_TO_VERIFY_LEAF_SIGNATURE" &&
+       printf '%s' "$tlsBadExtra" | grep -q "warning: ignoring NODE_EXTRA_CA_CERTS"; then
+        ok "tls-extra-ca-warns"
+    else
+        bad "tls-extra-ca-warns"
+        printf '%s\n' "$tlsBadExtra" >&2
+    fi
     if printf '%s' "$tlsSslFile" | grep -q "extra-ca 200 true"; then
         ok "tls-ssl-cert-file"
     else
@@ -349,6 +417,42 @@ if [ "$tlsOk" = 1 ]; then
     else
         bad "tls-verify-altname"
         printf '%s\n' "$tlsAltname" >&2
+    fi
+    if printf '%s' "$tlsWildOk" | grep -q "servername ok"; then
+        ok "tls-wildcard"
+    else
+        bad "tls-wildcard"
+        printf '%s\n' "$tlsWildOk" >&2
+    fi
+    if printf '%s' "$tlsWildDeep" | grep -q "servername ERR_TLS_CERT_ALTNAME_INVALID"; then
+        ok "tls-wildcard-deep"
+    else
+        bad "tls-wildcard-deep"
+        printf '%s\n' "$tlsWildDeep" >&2
+    fi
+    if printf '%s' "$tlsWildTld" | grep -q "servername ERR_TLS_CERT_ALTNAME_INVALID"; then
+        ok "tls-wildcard-tld"
+    else
+        bad "tls-wildcard-tld"
+        printf '%s\n' "$tlsWildTld" >&2
+    fi
+    if printf '%s' "$tlsCn" | grep -q "servername ok"; then
+        ok "tls-cn-fallback"
+    else
+        bad "tls-cn-fallback"
+        printf '%s\n' "$tlsCn" >&2
+    fi
+    if printf '%s' "$tlsDot" | grep -q "servername ok"; then
+        ok "tls-san-trailing-dot"
+    else
+        bad "tls-san-trailing-dot"
+        printf '%s\n' "$tlsDot" >&2
+    fi
+    if printf '%s' "$tlsEmpty" | grep -q "servername ok"; then
+        ok "tls-empty-servername"
+    else
+        bad "tls-empty-servername"
+        printf '%s\n' "$tlsEmpty" >&2
     fi
 else
     bad "tls-fixture"

@@ -158,6 +158,12 @@ struct uv_cpu_info_t
 }
 int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) nothrow @nogc;
 void uv_free_cpu_info(uv_cpu_info_t* cpu_infos, int count) nothrow @nogc;
+static if (size_t.sizeof == 8)
+{
+    static assert(uv_cpu_times_t.sizeof == 40);
+    static assert(uv_cpu_info_t.sizeof == 56);
+    static assert(uv_cpu_info_t.cpu_times.offsetof == 16);
+}
 
 int uv_poll_init_socket(uv_loop_t* loop, uv_poll_t* handle, int socket) nothrow @nogc;
 int uv_poll_start(uv_poll_t* handle, int events, uv_poll_cb cb) nothrow @nogc;

@@ -3,3 +3,4 @@ cpus-model true
 cpus-speed true
 cpus-times true
 cpus-idle true
+cpus-real true

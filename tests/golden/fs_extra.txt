@@ -8,6 +8,7 @@ rm-nodir EISDIR
 self-copy one
 write-mode 600
 copy-mode 600
+copyfile-excl-value true
 hex 68656c6c6f aGVsbG8=
 latin 233
 mkdir-file EEXIST

@@ -12,6 +12,7 @@ step() {
         printf '%s ok %s\n' "$name" "$(date -u +%FT%TZ)" >> "gates/$name.txt"
         echo "ok   $name"
     else
+        printf '%s FAIL %s\n' "$name" "$(date -u +%FT%TZ)" >> "gates/$name.txt"
         tail -25 ".dub/gate-$name.log" >&2
         echo "FAIL $name" >&2
         failures=$((failures+1))

@@ -23,13 +23,18 @@ DJS_TIMEOUT="$(command -v timeout || command -v gtimeout || true)"
 export DJS_TIMEOUT
 
 # tmo <seconds> <command...>
-tmo() {
-    local n="$1"; shift
-    if [ -n "$DJS_TIMEOUT" ]; then
-        "$DJS_TIMEOUT" "$n" "$@"
-    else
-        "$@"
-    fi
-}
+# A missing timeout utility is an error, never an unbounded run: the gate and
+# the overnight harness cannot distinguish a hang from progress otherwise.
+if [ -n "$DJS_TIMEOUT" ]; then
+    tmo() {
+        local n="$1"; shift
+        "$DJS_TIMEOUT" -k 5 "$n" "$@"
+    }
+else
+    tmo() {
+        echo "tmo: no timeout utility found (brew install coreutils)" >&2
+        return 125
+    }
+fi
 
 umask 022
