@@ -11,8 +11,9 @@ import core.sys.posix.fcntl : F_GETFL, F_SETFL, O_NONBLOCK, fcntl;
 import core.stdc.stdlib : free, getenv, malloc;
 import core.stdc.string : memcmp, memcpy, strlen;
 import core.sys.posix.netdb : addrinfo, freeaddrinfo, getaddrinfo;
+import core.sys.posix.arpa.inet : inet_pton;
 import core.sys.posix.poll : POLLIN, POLLOUT, poll, pollfd;
-import core.sys.posix.sys.socket : AF_UNSPEC, SO_ERROR, SOCK_STREAM, SOL_SOCKET,
+import core.sys.posix.sys.socket : AF_INET, AF_INET6, AF_UNSPEC, SO_ERROR, SOCK_STREAM, SOL_SOCKET,
     SO_TYPE, connect, getsockopt, setsockopt, socket, sockaddr, socklen_t;
 import core.sys.posix.unistd : close;
 
@@ -34,6 +35,7 @@ private enum int SSL_VERIFY_NONE = 0;
 private enum int SSL_VERIFY_PEER = 1;
 private enum int SSL_VERIFY_FAIL_IF_NO_PEER_CERT = 2;
 private enum int SSL_CTRL_SET_TLSEXT_HOSTNAME = 55;
+private enum int SSL_CTRL_SET_VERIFY_CERT_STORE = 106; // ssl.h; larg=1 up-refs the store
 private enum int TLSEXT_NAMETYPE_host_name = 0;
 private enum long SSL_CTRL_SET_MIN_PROTO_VERSION = 123;
 private enum long TLS1_2_VERSION = 0x0303;
@@ -53,7 +55,6 @@ extern(C) {
     void SSL_free(SSL*) nothrow @nogc;
     int SSL_set_fd(SSL*, int fd) nothrow @nogc;
     long SSL_ctrl(SSL*, int cmd, long larg, void* parg) nothrow @nogc;
-    int SSL_set1_host(SSL*, const(char)* host) nothrow @nogc;
     int SSL_connect(SSL*) nothrow @nogc;
     int SSL_accept(SSL*) nothrow @nogc;
     int SSL_CTX_use_certificate_file(SSL_CTX*, const(char)* file, int type) nothrow @nogc;
@@ -73,10 +74,142 @@ extern(C) {
     const(char)* X509_verify_cert_error_string(long n) nothrow @nogc;
     ulong ERR_get_error() nothrow @nogc;
     void ERR_error_string_n(ulong e, char* buf, size_t len) nothrow @nogc;
+
+    // Shared default CA store: built once at startup (default paths plus
+    // NODE_EXTRA_CA_CERTS) and attached to every verifying client context,
+    // so the CA bundle is not re-parsed per connection.
+    void* X509_STORE_new() nothrow @nogc;
+    int X509_STORE_set_default_paths(void* st) nothrow @nogc;
+    int X509_STORE_load_locations(void* st, const(char)* file, const(char)* dir) nothrow @nogc;
+    void X509_STORE_free(void* st) nothrow @nogc;
+    // Peer certificate identity (hostname/SAN check, Node's
+    // tls.checkServerIdentity behaviour).
+    void* X509_get_subject_name(const(void)* x) nothrow @nogc;
+    int X509_NAME_get_text_by_NID(void* name, int nid, char* buf, int len) nothrow @nogc;
+    void* X509_get_ext_d2i(void* x, int nid, int* crit, int* idx) nothrow @nogc;
+    void GENERAL_NAMES_free(void* st) nothrow @nogc;
+    int OPENSSL_sk_num(const(void)* st) nothrow @nogc;
+    void* OPENSSL_sk_value(const(void)* st, int i) nothrow @nogc;
 }
 
 private __gshared char[128] gAlpnPref;
 private __gshared bool gAlpnHasPref;
+
+// Minimal mirrors for certificate identity access. Both C structs are
+// pointer-stable public ABI: ASN1_STRING is {int length; int type; char* data;
+// long flags} and GENERAL_NAME is {int type; union of pointers}.
+private struct Asn1StringRef
+{
+    int length;
+    int type_;
+    char* data;
+    long flags_;
+}
+private struct GeneralNameRef
+{
+    int type_;
+    void* value_; // all union members are pointers
+}
+private enum int NID_subject_alt_name = 85;
+private enum int NID_commonName = 13;
+private enum int GEN_DNS = 2;
+private enum int GEN_IPADD = 7;
+
+// Shared CA store states: 1 = ready, 2 = NODE_EXTRA_CA_CERTS failed to load,
+// 0 = not built (connections fall back to per-context default paths).
+private __gshared void* g_caStore;
+private __gshared int g_caState;
+private __gshared const(char)* g_caError;
+
+private void buildSharedCaStore() @nogc nothrow
+{
+    void* st = X509_STORE_new();
+    if (st is null)
+        return; // state stays 0: connections use per-context default paths
+    if (X509_STORE_set_default_paths(st) != 1)
+    {
+        X509_STORE_free(st);
+        return;
+    }
+    const(char)* extra = getenv("NODE_EXTRA_CA_CERTS");
+    if (extra !is null && extra[0] != 0 && X509_STORE_load_locations(st, extra, null) != 1)
+    {
+        X509_STORE_free(st);
+        g_caState = 2;
+        g_caError = "could not load NODE_EXTRA_CA_CERTS";
+        return;
+    }
+    g_caStore = st;
+    g_caState = 1;
+}
+
+// Runtime teardown, after the loop drain released every SSL_CTX that shared
+// the store: drop the startup reference. Safe to call repeatedly.
+void tlsFreeGlobals() @nogc nothrow
+{
+    if (g_caStore !is null)
+    {
+        X509_STORE_free(g_caStore);
+        g_caStore = null;
+    }
+    g_caState = 0;
+    g_caError = null;
+}
+
+// Node reports the OpenSSL verify-reason name (X509_V_ERR_* minus the prefix)
+// as the error code. Generated from x509_vfy.h.
+private const(char)* verifyCodeString(long vr) @nogc nothrow
+{
+    switch (vr)
+    {
+        case 1: return "UNSPECIFIED";
+        case 2: return "UNABLE_TO_GET_ISSUER_CERT";
+        case 3: return "UNABLE_TO_GET_CRL";
+        case 4: return "UNABLE_TO_DECRYPT_CERT_SIGNATURE";
+        case 5: return "UNABLE_TO_DECRYPT_CRL_SIGNATURE";
+        case 6: return "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY";
+        case 7: return "CERT_SIGNATURE_FAILURE";
+        case 8: return "CRL_SIGNATURE_FAILURE";
+        case 9: return "CERT_NOT_YET_VALID";
+        case 10: return "CERT_HAS_EXPIRED";
+        case 11: return "CRL_NOT_YET_VALID";
+        case 12: return "CRL_HAS_EXPIRED";
+        case 13: return "ERROR_IN_CERT_NOT_BEFORE_FIELD";
+        case 14: return "ERROR_IN_CERT_NOT_AFTER_FIELD";
+        case 15: return "ERROR_IN_CRL_LAST_UPDATE_FIELD";
+        case 16: return "ERROR_IN_CRL_NEXT_UPDATE_FIELD";
+        case 17: return "OUT_OF_MEM";
+        case 18: return "DEPTH_ZERO_SELF_SIGNED_CERT";
+        case 19: return "SELF_SIGNED_CERT_IN_CHAIN";
+        case 20: return "UNABLE_TO_GET_ISSUER_CERT_LOCALLY";
+        case 21: return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+        case 22: return "CERT_CHAIN_TOO_LONG";
+        case 23: return "CERT_REVOKED";
+        case 24: return "NO_ISSUER_PUBLIC_KEY";
+        case 25: return "PATH_LENGTH_EXCEEDED";
+        case 26: return "INVALID_PURPOSE";
+        case 27: return "CERT_UNTRUSTED";
+        case 28: return "CERT_REJECTED";
+        case 29: return "SUBJECT_ISSUER_MISMATCH";
+        case 30: return "AKID_SKID_MISMATCH";
+        case 31: return "AKID_ISSUER_SERIAL_MISMATCH";
+        case 32: return "KEYUSAGE_NO_CERTSIGN";
+        case 33: return "UNABLE_TO_GET_CRL_ISSUER";
+        case 34: return "UNHANDLED_CRITICAL_EXTENSION";
+        case 35: return "KEYUSAGE_NO_CRL_SIGN";
+        case 36: return "UNHANDLED_CRITICAL_CRL_EXTENSION";
+        case 37: return "INVALID_NON_CA";
+        case 38: return "PROXY_PATH_LENGTH_EXCEEDED";
+        case 39: return "KEYUSAGE_NO_DIGITAL_SIGNATURE";
+        case 40: return "PROXY_CERTIFICATES_NOT_ALLOWED";
+        case 41: return "INVALID_EXTENSION";
+        case 42: return "INVALID_POLICY_EXTENSION";
+        case 43: return "NO_EXPLICIT_POLICY";
+        case 44: return "DIFFERENT_CRL_SCOPE";
+        case 45: return "UNSUPPORTED_EXTENSION_FEATURE";
+        default: return null; // unmapped: the generic ERR_TLS_HANDSHAKE is kept
+    }
+}
 
 private extern(C) int alpnSelectCb(SSL*, const(ubyte)** outPtr, ubyte* outLen,
                                    const(ubyte)* inData, uint inLen, void*) nothrow @nogc
@@ -149,6 +282,7 @@ private struct WorkJob
     SSL_CTX* ctx;
     int err;
     char[512] msg;
+    char[48] code; // error code override; empty = ERR_TLS_HANDSHAKE
 }
 
 private void setMsg(WorkJob* j, const(char)* text) @nogc nothrow
@@ -157,6 +291,14 @@ private void setMsg(WorkJob* j, const(char)* text) @nogc nothrow
     if (text !is null)
         while (text[i] != 0 && i + 1 < j.msg.length) { j.msg[i] = text[i]; i += 1; }
     j.msg[i] = 0;
+}
+
+private void setCode(WorkJob* j, const(char)* text) @nogc nothrow
+{
+    size_t i = 0;
+    if (text !is null)
+        while (text[i] != 0 && i + 1 < j.code.length) { j.code[i] = text[i]; i += 1; }
+    j.code[i] = 0;
 }
 
 private void tlsErrorMessage(WorkJob* j) @nogc nothrow
@@ -168,6 +310,114 @@ private void tlsErrorMessage(WorkJob* j) @nogc nothrow
         return;
     }
     setMsg(j, "TLS handshake failed");
+}
+
+
+private extern(C) int tlsVerifyContinueCb(int preverifyOk, void* x509Ctx) nothrow @nogc
+{
+    // Continue through every verification error so the final result is
+    // available after the handshake; the mapped code is reported then. This
+    // mirrors Node, which surfaces specific codes (self-signed, unknown CA,
+    // expired) rather than a generic handshake failure.
+    return 1;
+}
+
+private bool dnsNameMatches(const(char)* host, size_t hostLen,
+                            const(char)* name, int nameLen) @nogc nothrow
+{
+    if (hostLen == 0 || nameLen <= 0)
+        return false;
+    char[256] h = void;
+    char[256] n = void;
+    if (hostLen >= h.length || cast(size_t) nameLen >= n.length)
+        return false;
+    for (size_t i = 0; i < hostLen; ++i)
+        h[i] = (host[i] >= 'A' && host[i] <= 'Z') ? cast(char) (host[i] + 32) : host[i];
+    for (int i = 0; i < nameLen; ++i)
+        n[i] = (name[i] >= 'A' && name[i] <= 'Z') ? cast(char) (name[i] + 32) : name[i];
+    size_t hl = hostLen;
+    int nl = nameLen;
+    // Exact match.
+    if (hl == cast(size_t) nl)
+    {
+        bool same = true;
+        for (size_t i = 0; i < hl; ++i)
+            if (h[i] != n[i]) { same = false; break; }
+        if (same) return true;
+    }
+    // Wildcard: "*." in the certificate matches exactly one leftmost label.
+    if (nl > 2 && n[0] == '*' && n[1] == '.')
+    {
+        size_t hi = 0;
+        while (hi < hl && h[hi] != '.') hi += 1;
+        if (hi == hl || hi == 0) return false; // host must have another label
+        size_t hRest = hi + 1;
+        size_t nRest = 2;
+        if (hl - hRest != cast(size_t) (nl - nRest)) return false;
+        for (size_t i = 0; i < hl - hRest; ++i)
+            if (h[hRest + i] != n[nRest + i]) return false;
+        return true;
+    }
+    return false;
+}
+
+// Node's checkServerIdentity essentials: SANs win when present (DNS names
+// case-insensitively with leftmost-label wildcards, IP addresses byte-wise);
+// without SANs the CN is used. No identity at all is a mismatch.
+private bool tlsHostMatches(const(char)* servername, SSL* ssl) @nogc nothrow
+{
+    if (servername is null || servername[0] == 0)
+        return true; // nothing to check, like Node without a servername
+    void* cert = SSL_get1_peer_certificate(ssl);
+    if (cert is null)
+        return true; // verified sessions always present one; defensive
+    scope(exit) X509_free(cert);
+
+    char[256] host = void;
+    size_t hostLen = strlen(servername);
+    if (hostLen >= host.length)
+        return false;
+    memcpy(host.ptr, servername, hostLen);
+    if (hostLen > 0 && host[hostLen - 1] == '.')
+        hostLen -= 1; // ignore one trailing dot, like Node
+    host[hostLen] = 0;
+
+    bool hostIsIp = false;
+    int ipLen = 0;
+    ubyte[16] ipBuf = void;
+    if (inet_pton(AF_INET, host.ptr, ipBuf.ptr) == 1) { hostIsIp = true; ipLen = 4; }
+    else if (inet_pton(AF_INET6, host.ptr, ipBuf.ptr) == 1) { hostIsIp = true; ipLen = 16; }
+
+    void* sans = X509_get_ext_d2i(cert, NID_subject_alt_name, null, null);
+    if (sans !is null)
+    {
+        scope(exit) GENERAL_NAMES_free(sans);
+        int count = OPENSSL_sk_num(sans);
+        for (int i = 0; i < count; ++i)
+        {
+            GeneralNameRef* gn = cast(GeneralNameRef*) OPENSSL_sk_value(sans, i);
+            if (gn is null || gn.value_ is null) continue;
+            Asn1StringRef* str = cast(Asn1StringRef*) gn.value_;
+            if (gn.type_ == GEN_DNS && !hostIsIp)
+            {
+                if (str !is null && str.data !is null &&
+                    dnsNameMatches(host.ptr, hostLen, str.data, str.length))
+                    return true;
+            }
+            else if (gn.type_ == GEN_IPADD && hostIsIp)
+            {
+                if (str !is null && str.length == ipLen && str.data !is null &&
+                    memcmp(str.data, ipBuf.ptr, cast(size_t) ipLen) == 0)
+                    return true;
+            }
+        }
+        return false; // SANs present: the CN is not consulted
+    }
+    char[256] cn = void;
+    if (X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName,
+                                  cn.ptr, cast(int) cn.length) > 0)
+        return dnsNameMatches(host.ptr, hostLen, cn.ptr, cast(int) strlen(cn.ptr));
+    return false;
 }
 
 private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
@@ -230,9 +480,10 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
     SSL_CTX_ctrl(ctx, cast(int) SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, null);
     if (j.verify)
     {
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, null);
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, &tlsVerifyContinueCb);
         if (j.caFile !is null)
         {
+            // An explicit ca option overrides the default store, as in Node.
             if (SSL_CTX_load_verify_locations(ctx, j.caFile, null) != 1)
             {
                 setMsg(j, "could not load CA file");
@@ -240,21 +491,21 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
                 return;
             }
         }
-        else
+        else if (g_caState == 2)
         {
-            SSL_CTX_set_default_verify_paths(ctx);
-            // Node's additive trust extension. The file is loaded into the
-            // default store, so public CAs stay trusted. SSL_CERT_FILE and
-            // SSL_CERT_DIR are already honoured by OpenSSL's default paths.
-            const(char)* extra = getenv("NODE_EXTRA_CA_CERTS");
-            if (extra !is null && extra[0] != 0 &&
-                SSL_CTX_load_verify_locations(ctx, extra, null) != 1)
-            {
-                setMsg(j, "could not load NODE_EXTRA_CA_CERTS");
-                j.err = 1;
-                return;
-            }
+            setMsg(j, g_caError);
+            j.err = 1;
+            return;
         }
+        else if (g_caStore !is null &&
+                 SSL_CTX_ctrl(ctx, SSL_CTRL_SET_VERIFY_CERT_STORE, 1, g_caStore) == 1)
+        {
+            // Shared store: default paths plus NODE_EXTRA_CA_CERTS (built
+            // once at startup). SSL_CERT_FILE/SSL_CERT_DIR are honoured by
+            // OpenSSL's default-path loading either way.
+        }
+        else
+            SSL_CTX_set_default_verify_paths(ctx);
     }
     if (j.certFile !is null || j.keyFile !is null)
     {
@@ -305,14 +556,13 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
     if (ssl is null) { setMsg(j, "SSL_new failed"); j.err = 1; return; }
     j.ssl = ssl;
     SSL_set_fd(ssl, fd);
-    SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
-             cast(void*) j.servername);
-    if (j.verify && SSL_set1_host(ssl, j.servername) != 1)
-    {
-        setMsg(j, "SSL_set1_host failed");
-        j.err = 1;
-        return;
-    }
+    // SNI is not sent for IP literals (Node does the same). Hostname
+    // matching happens after the handshake, in tlsHostMatches.
+    char sni0 = j.servername !is null ? j.servername[0] : 0;
+    bool servernameIsIp = (sni0 >= '0' && sni0 <= '9') || sni0 == ':';
+    if (!servernameIsIp && sni0 != 0)
+        SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
+                 cast(void*) j.servername);
     while (true)
     {
         int rc = SSL_connect(ssl);
@@ -338,6 +588,14 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
         if (vr != 0)
         {
             setMsg(j, X509_verify_cert_error_string(vr));
+            setCode(j, verifyCodeString(vr));
+            j.err = 1;
+            return;
+        }
+        if (!tlsHostMatches(j.servername, ssl))
+        {
+            setMsg(j, "Hostname/IP does not match certificate's altnames");
+            setCode(j, "ERR_TLS_CERT_ALTNAME_INVALID");
             j.err = 1;
             return;
         }
@@ -495,7 +753,7 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
         if (j.ssl !is null) SSL_free(j.ssl);
         if (j.ctx !is null) SSL_CTX_free(j.ctx);
         JSValue err = makeError(rt.ctx, j.msg[0] != 0 ? j.msg.ptr : "TLS failed",
-                                "ERR_TLS_HANDSHAKE", null, null);
+                                j.code[0] != 0 ? j.code.ptr : "ERR_TLS_HANDSHAKE", null, null);
         JSValue[2] argv = [err, jsUndefined()];
         tlsCall(rt, j.cb, argv.ptr, 2, true);
         freeJob(j);
@@ -614,6 +872,10 @@ private extern(C) JSValue jsTlsConnectImpl(JSContext* ctx, JSValueConst, int arg
         return throwInternalError(ctx, "out of memory");
     }
     *j = WorkJob.init;
+    // char.init is 0xFF in D, not 0: terminate the buffers that are only
+    // written on some paths so the empty checks in tlsAfterWork hold.
+    j.msg[0] = 0;
+    j.code[0] = 0;
     j.host = dupCString(host);
     j.servername = dupCString(sni);
     JS_FreeCString(ctx, host);
@@ -960,6 +1222,8 @@ extern(C) JSValue jsAcceptFd(JSContext* ctx, JSValueConst thisVal, int argc, JSV
 
 bool installTls(Runtime* self, JSValueConst djs) @nogc nothrow
 {
+    // Before the loop starts (single-threaded): build the shared CA store.
+    buildSharedCaStore();
     JSContext* ctx = self.ctx;
     JSValue obj = JS_NewObject(ctx);
     if (jsIsException(obj)) return false;

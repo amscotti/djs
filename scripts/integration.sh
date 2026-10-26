@@ -237,14 +237,13 @@ else
     sed -n '1,5p' "$sigOut" >&2
 fi
 
-# TLS client against a loopback openssl server. The certificate is
-# self-signed, so verification must fail while rejectUnauthorized:false works.
+# TLS clients against loopback openssl servers: self-signed (must fail
+# verification with Node's code), CA-signed with a DNS-only SAN (altname
+# failure and untrusted-CA failure), and CA-signed with DNS+IP SANs (trusted
+# success). Config files instead of -addext: macOS ships LibreSSL.
 tlsDir="$TMP/tls"
 mkdir -p "$tlsDir"
-# SANs make the trusted-CA path testable: IP for the client connection and DNS
-# for tools that use localhost. Written as a config file because macOS ships
-# LibreSSL, whose req(1) lacks -addext.
-cat > "$tlsDir/req.cnf" <<'EOF'
+cat > "$tlsDir/self.cnf" <<'EOF'
 [req]
 distinguished_name = dn
 x509_extensions = v3
@@ -254,23 +253,67 @@ CN = localhost
 [v3]
 subjectAltName = DNS:localhost,IP:127.0.0.1
 EOF
-if openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/key.pem" -out "$tlsDir/cert.pem" \
-        -days 1 -nodes -config "$tlsDir/req.cnf" >/dev/null 2>&1; then
-    tlsPort=$((18443 + RANDOM % 1000))
+cat > "$tlsDir/dns.cnf" <<'EOF'
+[req]
+distinguished_name = dn
+req_extensions = v3
+prompt = no
+[dn]
+CN = localhost
+[v3]
+subjectAltName = DNS:localhost
+basicConstraints = CA:FALSE
+EOF
+cat > "$tlsDir/san.cnf" <<'EOF'
+[req]
+distinguished_name = dn
+req_extensions = v3
+prompt = no
+[dn]
+CN = localhost
+[v3]
+subjectAltName = DNS:localhost,IP:127.0.0.1
+basicConstraints = CA:FALSE
+EOF
+tlsOk=1
+openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/key.pem" -out "$tlsDir/cert.pem" \
+    -days 1 -nodes -config "$tlsDir/self.cnf" >/dev/null 2>&1 || tlsOk=0
+openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/ca.key" -out "$tlsDir/ca.pem" \
+    -days 1 -nodes -subj "/CN=DJS Test CA" >/dev/null 2>&1 || tlsOk=0
+for prof in dns san; do
+    openssl req -new -newkey rsa:2048 -keyout "$tlsDir/$prof.key" -out "$tlsDir/$prof.csr" \
+        -nodes -config "$tlsDir/$prof.cnf" >/dev/null 2>&1 || tlsOk=0
+    openssl x509 -req -in "$tlsDir/$prof.csr" -CA "$tlsDir/ca.pem" -CAkey "$tlsDir/ca.key" \
+        -CAcreateserial -out "$tlsDir/$prof.pem" -days 1 \
+        -extfile "$tlsDir/$prof.cnf" -extensions v3 >/dev/null 2>&1 || tlsOk=0
+done
+if [ "$tlsOk" = 1 ]; then
+    tlsPort=$((18443 + RANDOM % 900))
+    tlsPort2=$((tlsPort + 1))
+    tlsPort3=$((tlsPort + 2))
     openssl s_server -accept "$tlsPort" -cert "$tlsDir/cert.pem" -key "$tlsDir/key.pem" \
         -www -quiet >/dev/null 2>&1 &
     tlsPid=$!
+    openssl s_server -accept "$tlsPort2" -cert "$tlsDir/dns.pem" -key "$tlsDir/dns.key" \
+        -www -quiet >/dev/null 2>&1 &
+    tlsPid2=$!
+    openssl s_server -accept "$tlsPort3" -cert "$tlsDir/san.pem" -key "$tlsDir/san.key" \
+        -www -quiet >/dev/null 2>&1 &
+    tlsPid3=$!
     sleep 0.5
     tlsOut="$("$BIN" -A tests/js/fixtures/tls_client.js "$tlsPort" 2>&1)"
-    tlsExtra="$(NODE_EXTRA_CA_CERTS="$tlsDir/cert.pem" "$BIN" -A \
-        tests/js/fixtures/tls_extra_ca.js "$tlsPort" 2>&1)"
-    tlsNoExtra="$("$BIN" -A tests/js/fixtures/tls_extra_ca.js "$tlsPort" 2>&1)"
-    tlsSslFile="$(SSL_CERT_FILE="$tlsDir/cert.pem" "$BIN" -A \
-        tests/js/fixtures/tls_extra_ca.js "$tlsPort" 2>&1)"
-    kill "$tlsPid" 2>/dev/null
-    wait "$tlsPid" 2>/dev/null
+    tlsExtra="$(NODE_EXTRA_CA_CERTS="$tlsDir/ca.pem" "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPort3" 2>&1)"
+    tlsNoExtra="$("$BIN" -A tests/js/fixtures/tls_extra_ca.js "$tlsPort3" 2>&1)"
+    tlsSslFile="$(SSL_CERT_FILE="$tlsDir/ca.pem" "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPort3" 2>&1)"
+    tlsUntrusted="$("$BIN" -A tests/js/fixtures/tls_code.js "$tlsPort2" 2>&1)"
+    tlsAltname="$(NODE_EXTRA_CA_CERTS="$tlsDir/ca.pem" "$BIN" -A \
+        tests/js/fixtures/tls_code.js "$tlsPort2" 2>&1)"
+    kill "$tlsPid" "$tlsPid2" "$tlsPid3" 2>/dev/null
+    wait "$tlsPid" "$tlsPid2" "$tlsPid3" 2>/dev/null
     if printf '%s' "$tlsOut" | grep -q "https 200 true" &&
-       printf '%s' "$tlsOut" | grep -q "verify ERR_TLS_HANDSHAKE" &&
+       printf '%s' "$tlsOut" | grep -q "verify DEPTH_ZERO_SELF_SIGNED_CERT" &&
        printf '%s' "$tlsOut" | grep -q "fetch true"; then
         ok "tls-https"
     else
@@ -294,6 +337,18 @@ if openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/key.pem" -out "$tlsDir/ce
     else
         bad "tls-ssl-cert-file"
         printf '%s\n' "$tlsSslFile" >&2
+    fi
+    if printf '%s' "$tlsUntrusted" | grep -q "code UNABLE_TO_VERIFY_LEAF_SIGNATURE"; then
+        ok "tls-verify-untrusted"
+    else
+        bad "tls-verify-untrusted"
+        printf '%s\n' "$tlsUntrusted" >&2
+    fi
+    if printf '%s' "$tlsAltname" | grep -q "code ERR_TLS_CERT_ALTNAME_INVALID"; then
+        ok "tls-verify-altname"
+    else
+        bad "tls-verify-altname"
+        printf '%s\n' "$tlsAltname" >&2
     fi
 else
     bad "tls-fixture"

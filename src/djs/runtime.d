@@ -14,7 +14,7 @@ import djs.apis.child : installChild;
 import djs.apis.crypto : installCrypto, cryptoCloseAll;
 import djs.apis.zlib : installZlib, zlibCloseAll;
 import djs.apis.vm : installVm;
-import djs.apis.tls : installTls, tlsCloseAll;
+import djs.apis.tls : installTls, tlsCloseAll, tlsFreeGlobals;
 import djs.apis.dgram : installDgram, dgramCloseAll;
 import djs.apis.os : installOs;
 import djs.apis.process : installProcess;
@@ -1202,6 +1202,10 @@ int runtimeTeardown(Runtime* self) @nogc nothrow
         }
         loopStuck = uv_loop_alive(self.loop) != 0;
     }
+
+    // The loop drain above released every SSL_CTX that shared the CA store;
+    // drop the startup reference so nothing process-lifetime remains.
+    tlsFreeGlobals();
 
     int code = self.exitCode;
     if (loopStuck && !self.exitRequested && !self.failed)
