@@ -2557,7 +2557,7 @@ private extern(C) void watchEventCb(uv_fs_event_t* h, const(char)* filename,
                                     int events, int status) nothrow @nogc
 {
     WatchSlot* w = cast(WatchSlot*) uv_handle_get_data(cast(uv_handle_t*) h);
-    if (w is null || w.closing || status < 0 || w.rt is null)
+    if (w is null || w.closing || w.rt is null)
         return;
     // Same turn-ending rule as every other completion path: after exit() or
     // a fatal callback, do not run more user JS from a late event.
@@ -2565,13 +2565,24 @@ private extern(C) void watchEventCb(uv_fs_event_t* h, const(char)* filename,
     if (rt.shuttingDown || rt.failed || rt.exitRequested)
         return;
     JSValue[2] argv = void;
-    const(char)* ev = (events & UV_RENAME) != 0 ? "rename" : "change";
-    argv[0] = JS_NewStringLen(rt.ctx, ev, strlen(ev));
-    argv[1] = (filename !is null && filename[0] != 0)
-        ? JS_NewStringLen(rt.ctx, filename, strlen(filename))
-        : jsNull();
+    if (status < 0)
+    {
+        // Node emits 'error' on the watcher. The prelude detects the null
+        // event type, forwards the Error and closes the watcher.
+        argv[0] = jsNull();
+        argv[1] = makeError(rt.ctx, uv_strerror(status), uv_err_name(status),
+                            null, "watch");
+    }
+    else
+    {
+        const(char)* ev = (events & UV_RENAME) != 0 ? "rename" : "change";
+        argv[0] = JS_NewStringLen(rt.ctx, ev, strlen(ev));
+        argv[1] = (filename !is null && filename[0] != 0)
+            ? JS_NewStringLen(rt.ctx, filename, strlen(filename))
+            : jsNull();
+    }
     watchCall(rt, w.cb, 2, argv.ptr);
-    JS_FreeValue(rt.ctx, argv[0]);
+    if (!jsIsNull(argv[0])) JS_FreeValue(rt.ctx, argv[0]);
     if (!jsIsNull(argv[1])) JS_FreeValue(rt.ctx, argv[1]);
 }
 

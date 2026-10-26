@@ -473,10 +473,28 @@
     RecursiveWatcher.prototype = Object.create(EventEmitter.prototype);
     RecursiveWatcher.prototype.constructor = RecursiveWatcher;
     RecursiveWatcher.prototype._addDir = function (dir) {
-        if (this._closed || this._watched[dir]) return;
+        if (this._closed) return;
+        var st0 = null;
+        try { st0 = statSync(dir); } catch (e) { return; }
+        if (!st0.isDirectory()) return;
+        var existing = this._watched[dir];
+        if (existing) {
+            if (existing.dev === st0.dev && existing.ino === st0.ino) return;
+            // The path now names a different inode (recreated directory).
+            // Close the watcher following the old inode before rebinding.
+            this._removeDir(dir);
+        }
         var self = this;
         var id = __djs.fs.watchStart(dir, function (type, filename) {
             if (self._closed) return;
+            // A late event from a watcher that was replaced at this path must
+            // not prune the new watcher.
+            if (self._watched[dir] && self._watched[dir].id !== id) return;
+            if (type === null) {
+                try { self.emit('error', filename); }
+                finally { self.close(); }
+                return;
+            }
             // libuv replaces a nameless self event with basename(dir), which
             // would otherwise become dir/dir. Resolve self events to dir.
             var selfEvent = !filename || filename === pathModule.basename(dir);
@@ -501,7 +519,7 @@
                 }
             }
         });
-        this._watched[dir] = id;
+        this._watched[dir] = { id: id, dev: st0.dev, ino: st0.ino };
         if (!this._ref) __djs.fs.watchSetRef(id, false);
         var names;
         try { names = readdirSync(dir); } catch (e) { return; }
@@ -519,18 +537,18 @@
         var self = this;
         Object.keys(this._watched).forEach(function (key) {
             if (key !== dir && key.indexOf(prefix) !== 0) return;
-            var id = self._watched[key];
+            var entry = self._watched[key];
             delete self._watched[key];
-            if (id) {
-                try { __djs.fs.watchClose(id); } catch (e) {}
+            if (entry && entry.id) {
+                try { __djs.fs.watchClose(entry.id); } catch (e) {}
             }
         });
     };
     RecursiveWatcher.prototype._forEachId = function (fn) {
         var self = this;
         Object.keys(this._watched).forEach(function (key) {
-            var id = self._watched[key];
-            if (id) { try { fn(id); } catch (e) {} }
+            var entry = self._watched[key];
+            if (entry && entry.id) { try { fn(entry.id); } catch (e) {} }
         });
     };
     RecursiveWatcher.prototype.close = function () {
@@ -564,6 +582,11 @@
         var self = new FSWatcher(listener);
         self._id = __djs.fs.watchStart(String(path), function (type, filename) {
             if (self._closed) return;
+            if (type === null) {
+                try { self.emit('error', filename); }
+                finally { self.close(); }
+                return;
+            }
             self.emit('change', type, filename);
             if (self._listener) self._listener(type, filename);
         }, recursive);
