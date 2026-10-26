@@ -170,6 +170,15 @@ watcher/slot-exhaustion/non-recursive/recursive-new-subdir coverage.
 7. **`dgram` IP options** — Linux option numbers hit different Darwin
    options (`IP_TTL=2` is `IP_HDRINCL`); TTL/multicast/broadcast
    configuration fails with `ENOPROTOOPT` (§4 #10).
+8. **DNS resolver does not read `/etc/hosts`** — djs's hand-rolled resolver
+   queries DNS servers directly (`prelude/04-platform.js`), whereas Node
+   (c-ares) honours the hosts file. `localhost` resolving to `127.0.0.1`
+   therefore works by accident on Linux CI and not on macOS
+   (`tests/js/dns_resolve.js` fails). Reading `/etc/hosts` (both platforms)
+   is the parity fix.
+9. **`os.tmpdir()` returns `TMPDIR` verbatim** including a trailing slash,
+   unlike Node (minor). Platform-string tests aside, no golden
+   currently prints it.
 
 ## 7. Test suite + gates portability
 
@@ -189,20 +198,41 @@ The three failures separate cleanly:
 
 Static findings that remain:
 
-- **Scripts:** `timeout` (integration.sh, gate.sh, soak.sh, diff-node.sh,
-  bench.sh — confirmed missing on stock macOS), GNU `sed -i`, `sha256sum`,
-  `nproc`, `head -c`, `/dev/full`, GNU `stat`/`date` forms, and `readlink -f`
-  appear across `scripts/*.sh`. Two viable routes: (a) require Homebrew
-  `coreutils`/`gnu-timeout` and a PATH shim in CI, or (b) make the scripts
-  BSD/GNU neutral. (a) is far cheaper and CI-only.
-- **Goldens:** platform-dependent output exists in a minority of cases —
-  `os.platform()` strings, cpus/totalmem/freemem values, some
-  `os.tmpdir()`/`/private/var` realpath prefixes, and the watch tests
-  (inotify-specific timing/names). `integration.sh` normalizes only
-  `__ROOT__` today; add `__PLATFORM__`/`__CPUS__`/`__TMPDIR__` placeholders
-  or per-platform goldens, and mark watch cases conditional on the backend.
-- **`dub test`** needs a macOS-unittest configuration (or link lflags moved
-  into a platform conditional).
+- **Scripts — the real Linux-isms are few and precise:** `timeout` is the
+  big one (`integration.sh:34,181,198`; `gate-sanitize.sh:46`;
+  `gate-net.sh:23`; `gate-express.sh:12`; `fuzz.sh:17`), and two uses fail
+  *silently* when it is absent: gate-sanitize greps only stderr for
+  sanitizer text and fuzz treats rc 127 as success, so a missing `timeout`
+  reads as a pass. Everything else is small: `bench.sh` uses
+  `date +%s%N` and `/proc/cpuinfo`; `gate-examples.sh`/`gate-express.sh`/
+  `gate-compat.sh` assume `npm ci` already ran (they fail on a clean
+  checkout — Linux too, as observed in the container); `gate.sh` does not
+  `mkdir -p .dub` before logging; `integration.sh`/`gate.sh` invoke
+  `dub build`/`dub test` without selecting a platform config. **Not**
+  present (contrary to a first-glance assumption): GNU `sed -i`,
+  `stat -c`, `readlink -f`, `grep -P`; `head -c` works (BSD supports it);
+  no `flock`/`xxd`/`base64 -w`. All 20 scripts are bash-3.2 compatible
+  (`bash -n` clean; no associative arrays/mapfile/`&>>`). Cheap CI route:
+  Homebrew `coreutils` gnubin on PATH plus explicit config selection.
+- **Goldens — 7–8 of 150 need Darwin variants/normalization** of 147 suite
+  cases: `process_info`, `builtin_import`, `builtin_new_modules`,
+  `require_fs`, `os_module` (platform string, cpus/memory values),
+  `child_process` (`/tmp` vs `/private/tmp`), `dns_resolve`,
+  `fs_errors2` (`/dev/full` absent), `node_partials` (`lo` vs `lo0`,
+  uptime, dgram). Also normalize `$TMPDIR`/`/private/var`→`/var` in
+  `integration.sh:52` (today only `__ROOT__`) and set `umask 022` for the
+  mode-printing tests. The remaining **128 of 147 cases (87%) pass
+  unmodified** once the runtime ports land; 10 need only the runtime fixes
+  (watch, dgram, execvpe env).
+- **`dub.json`**: there is no `defaultConfiguration`, so plain `dub build`
+  picks the Linux `application` config even on macOS, and `dub test` picks
+  the Linux-soname `unittest` config. Add `unittest-macos` and
+  `sanitize-macos` configurations (same targets as their Linux twins, with
+  the macos lflags). The `macos` config's `-L/opt/homebrew/lib` precedes
+  the openssl@3 path, so `-lcrypto` resolves through Homebrew's unversioned
+  symlink — observed linking **openssl@4** on this machine; reorder or pin
+  the versioned library names.
+- **`dub test`** needs the macOS-unittest configuration (above).
 - **gate.sh**: abi/build/version/unittest/integration/permissions/net/diff/
   soak are mechanically portable once scripts normalize; sanitize needs an
   LDC/Mach-O ASan check (LDC 1.43 supports `-fsanitize=address` on Darwin,
