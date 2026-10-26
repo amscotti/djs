@@ -464,7 +464,6 @@
         this._listener = listener || null;
         this._closed = false;
         this._watched = Object.create(null);
-        this._ids = [];
         this._ref = true;
         this._addDir(this._root);
     }
@@ -473,7 +472,6 @@
     RecursiveWatcher.prototype._addDir = function (dir) {
         if (this._closed || this._watched[dir]) return;
         var self = this;
-        this._watched[dir] = true;
         var id = __djs.fs.watchStart(dir, function (type, filename) {
             if (self._closed) return;
             var full = filename ? pathModule.join(dir, filename) : dir;
@@ -481,13 +479,18 @@
             self.emit('change', type, rel);
             if (self._listener) self._listener(type, rel);
             if (type === 'rename') {
-                try {
-                    var st = statSync(full);
-                    if (st.isDirectory()) self._addDir(full);
-                } catch (e) {}
+                var st = null;
+                try { st = statSync(full); } catch (e) {}
+                if (st && st.isDirectory()) {
+                    self._addDir(full);
+                } else if (!st) {
+                    // Renamed away or deleted: stop watching it (and any
+                    // descendants) instead of keeping dead watchers.
+                    self._removeDir(full);
+                }
             }
         });
-        this._ids.push(id);
+        this._watched[dir] = id;
         if (!this._ref) __djs.fs.watchSetRef(id, false);
         var names;
         try { names = readdirSync(dir); } catch (e) { return; }
@@ -499,21 +502,41 @@
             } catch (e) {}
         }
     };
+    RecursiveWatcher.prototype._removeDir = function (dir) {
+        if (this._closed) return;
+        var prefix = dir + pathModule.sep;
+        var self = this;
+        Object.keys(this._watched).forEach(function (key) {
+            if (key !== dir && key.indexOf(prefix) !== 0) return;
+            var id = self._watched[key];
+            delete self._watched[key];
+            if (id) {
+                try { __djs.fs.watchClose(id); } catch (e) {}
+            }
+        });
+    };
+    RecursiveWatcher.prototype._forEachId = function (fn) {
+        var self = this;
+        Object.keys(this._watched).forEach(function (key) {
+            var id = self._watched[key];
+            if (id) { try { fn(id); } catch (e) {} }
+        });
+    };
     RecursiveWatcher.prototype.close = function () {
         if (this._closed) return;
         this._closed = true;
-        for (var i = 0; i < this._ids.length; i++) __djs.fs.watchClose(this._ids[i]);
-        this._ids = [];
+        this._forEachId(function (id) { __djs.fs.watchClose(id); });
+        this._watched = Object.create(null);
         this.emit('close');
     };
     RecursiveWatcher.prototype.ref = function () {
         this._ref = true;
-        if (!this._closed) for (var i = 0; i < this._ids.length; i++) __djs.fs.watchSetRef(this._ids[i], true);
+        if (!this._closed) this._forEachId(function (id) { __djs.fs.watchSetRef(id, true); });
         return this;
     };
     RecursiveWatcher.prototype.unref = function () {
         this._ref = false;
-        if (!this._closed) for (var i = 0; i < this._ids.length; i++) __djs.fs.watchSetRef(this._ids[i], false);
+        if (!this._closed) this._forEachId(function (id) { __djs.fs.watchSetRef(id, false); });
         return this;
     };
 
