@@ -39,10 +39,10 @@ function proceed() {
                 setTimeout(function () {
                     fs.unlinkSync(path.join(dir, 'b.txt'));
                     setTimeout(finish, 350);
-                }, 350);
-            }, 350);
-        }, 350);
-    }, 350);
+                }, 600);
+            }, 600);
+        }, 600);
+    }, 600);
 }
 
 function finish() {

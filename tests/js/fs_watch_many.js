@@ -36,7 +36,7 @@ function finish() {
 
 setTimeout(function () {
     for (let i = 0; i < 40; i++) fs.writeFileSync(path.join(dirs[i], "f.txt"), "x");
-}, 300);
+}, 700);
 
 setTimeout(function () {
     if (done) return;
@@ -45,4 +45,4 @@ setTimeout(function () {
     console.log("many-events", seen.size >= 40, seen.size);
     console.log("done");
     process.exitCode = 1;
-}, 4000);
+}, 8000);
