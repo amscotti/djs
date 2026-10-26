@@ -288,7 +288,12 @@ private extern(C) int alpnSelectCb(SSL*, const(ubyte)** outPtr, ubyte* outLen,
     return 3;
 }
 
-private enum int maxTls = 16;
+// Live TLS sockets are a fixed table, but 16 was low enough that ordinary
+// client fan-out (Promise.all over a few dozen fetches) and modest HTTPS
+// servers hit it. 256 covers realistic bursts without a measurable footprint
+// (TlsSock is a few pointers; the SSL objects dominate and only exist for
+// live sockets). Exhaustion queues completed handshakes rather than failing.
+private enum int maxTls = 256;
 private enum int readChunk = 16384;
 private enum size_t maxWriteQueue = 16 * 1024 * 1024;
 
@@ -332,6 +337,7 @@ private struct WorkJob
     int err;
     char[512] msg;
     char[48] code; // error code override; empty = ERR_TLS_HANDSHAKE
+    WorkJob* next; // queued when every TLS slot is busy
 }
 
 private void setMsg(WorkJob* j, const(char)* text) @nogc nothrow
@@ -710,9 +716,10 @@ private TlsSock* findSock(Runtime* rt, uint id) @nogc nothrow
     return null;
 }
 
-private void releaseSock(TlsSock* s) @nogc nothrow
+private void releaseSock(TlsSock* s, bool dispatch = true) @nogc nothrow
 {
     if (s is null) return;
+    Runtime* rt = s.rt;
     // Callback slots hold a JSValue each; releasing them is what keeps the
     // QuickJS heap flat when a socket is closed without delivering EOF.
     if (s.readCb != 0 && s.rt !is null)
@@ -735,6 +742,12 @@ private void releaseSock(TlsSock* s) @nogc nothrow
     s.readCb = 0;
     s.writeCb = 0;
     s.id = 0;
+    s.rt = null;
+    // A completed handshake may be waiting for this slot. Do not repopulate
+    // the table while a runtime is shutting down: teardown owns its queue and
+    // will release those jobs explicitly.
+    if (dispatch && !runtimeGone(rt))
+        dispatchPending(s);
 }
 
 private void tlsCall(Runtime* rt, ulong cb, JSValue* argv, int argc,
@@ -835,24 +848,147 @@ private void freeJob(WorkJob* j) @nogc nothrow
     free(j);
 }
 
+// A completed handshake owns an fd + SSL + SSL_CTX. Normally installJob
+// transfers them into a TLS table slot; on error or teardown they are freed
+// here so a queued job cannot leak a descriptor.
+private void discardJobSockets(WorkJob* j) @nogc nothrow
+{
+    if (j is null) return;
+    if (j.fd >= 0) { close(j.fd); j.fd = -1; }
+    if (j.ssl !is null) { SSL_free(j.ssl); j.ssl = null; }
+    if (j.ctx !is null) { SSL_CTX_free(j.ctx); j.ctx = null; }
+}
+
+// Handshakes that finished while every table slot was busy wait here. The
+// connection is already established, so this is a short queue, bounded by the
+// number of concurrent connect calls rather than by the thread pool.
+private WorkJob* pendingHead = null;
+private WorkJob* pendingTail = null;
+
+private bool runtimeGone(Runtime* rt) @nogc nothrow
+{
+    return rt is null || rt.shuttingDown || rt.failed || rt.exitRequested;
+}
+
+private void pushPending(WorkJob* j) @nogc nothrow
+{
+    j.next = null;
+    if (pendingTail !is null) pendingTail.next = j;
+    else pendingHead = j;
+    pendingTail = j;
+}
+
+private WorkJob* popPending() @nogc nothrow
+{
+    WorkJob* j = pendingHead;
+    if (j is null) return null;
+    pendingHead = j.next;
+    if (pendingHead is null) pendingTail = null;
+    j.next = null;
+    return j;
+}
+
+// Drop queued jobs belonging to a runtime that is going away. Their callbacks
+// must be released while the QuickJS context and callback registry are alive.
+private void abandonPending(Runtime* self) @nogc nothrow
+{
+    WorkJob* keptHead = null;
+    WorkJob* keptTail = null;
+    WorkJob* j = pendingHead;
+    while (j !is null)
+    {
+        WorkJob* next = j.next;
+        j.next = null;
+        if (j.rt is self)
+        {
+            discardJobSockets(j);
+            freeJob(j);
+        }
+        else
+        {
+            if (keptTail !is null) keptTail.next = j;
+            else keptHead = j;
+            keptTail = j;
+        }
+        j = next;
+    }
+    pendingHead = keptHead;
+    pendingTail = keptTail;
+}
+
+private bool installJob(TlsSock* s, WorkJob* j) @nogc nothrow
+{
+    s.used = true;
+    s.closing = false;
+    s.fd = j.fd;
+    s.ssl = j.ssl;
+    s.ctx = j.ctx;
+    s.rt = j.rt;
+    s.id = nextId++;
+    if (nextId == 0) nextId = 1;
+    s.readCb = 0;
+    s.writeCb = 0;
+    s.wbuf = null;
+    s.wlen = s.woff = 0;
+    j.fd = -1;
+    j.ssl = null;
+    j.ctx = null;
+
+    uv_poll_t* p = cast(uv_poll_t*) malloc(uv_handle_size(UV_POLL));
+    if (p is null || uv_poll_init_socket(j.rt.loop, p, s.fd) != 0)
+    {
+        if (p !is null) free(p);
+        releaseSock(s, false);
+        return false;
+    }
+    s.poll = p;
+    uv_handle_set_data(cast(uv_handle_t*) p, s);
+    uv_poll_start(p, UV_READABLE | UV_WRITABLE, &tlsPollCb);
+    return true;
+}
+
+private void dispatchPending(TlsSock* s) @nogc nothrow
+{
+    if (s is null || s.used) return;
+    while (pendingHead !is null)
+    {
+        WorkJob* j = popPending();
+        if (runtimeGone(j.rt))
+        {
+            discardJobSockets(j);
+            freeJob(j);
+            continue;
+        }
+        if (!installJob(s, j))
+        {
+            JSValue err = makeError(j.rt.ctx, "TLS poll init failed", "ERR_TLS_INIT", null, null);
+            JSValue[2] argv = [err, jsUndefined()];
+            tlsCall(j.rt, j.cb, argv.ptr, 2, true);
+            freeJob(j);
+            dispatchPending(s);
+            return;
+        }
+        JSValue[2] argv = [jsNull(), jsInt(cast(int) s.id)];
+        tlsCall(j.rt, j.cb, argv.ptr, 2, true);
+        freeJob(j);
+        return;
+    }
+}
+
 private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
 {
     WorkJob* j = cast(WorkJob*) uv_req_get_data(cast(uv_req_t*) req);
     if (j is null) return;
     Runtime* rt = j.rt;
-    if (rt.shuttingDown || rt.failed || rt.exitRequested)
+    if (runtimeGone(rt))
     {
-        if (j.fd >= 0) close(j.fd);
-        if (j.ssl !is null) SSL_free(j.ssl);
-        if (j.ctx !is null) SSL_CTX_free(j.ctx);
+        discardJobSockets(j);
         freeJob(j);
         return;
     }
     if (j.err != 0 || j.ssl is null)
     {
-        if (j.fd >= 0) close(j.fd);
-        if (j.ssl !is null) SSL_free(j.ssl);
-        if (j.ctx !is null) SSL_CTX_free(j.ctx);
+        discardJobSockets(j);
         JSValue err = makeError(rt.ctx, j.msg[0] != 0 ? j.msg.ptr : "TLS failed",
                                 j.code[0] != 0 ? j.code.ptr : "ERR_TLS_HANDSHAKE", null, null);
         JSValue[2] argv = [err, jsUndefined()];
@@ -864,38 +1000,21 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
     foreach (i; 0 .. maxTls) if (!socks[i].used) { slot = cast(int) i; break; }
     if (slot < 0)
     {
-        close(j.fd);
-        SSL_free(j.ssl);
-        SSL_CTX_free(j.ctx);
-        JSValue err = makeError(rt.ctx, "TLS table exhausted", "ERR_TLS_EXHAUSTED", null, null);
-        JSValue[2] argv = [err, jsUndefined()];
-        tlsCall(rt, j.cb, argv.ptr, 2, true);
-        freeJob(j);
+        // The handshake already succeeded. Keep the connection parked until a
+        // live socket closes instead of discarding the work and failing.
+        pushPending(j);
         return;
     }
     TlsSock* s = &socks[slot];
-    s.used = true;
-    s.fd = j.fd;
-    s.ssl = j.ssl;
-    s.ctx = j.ctx;
-    s.rt = rt;
-    s.id = nextId++;
-    if (nextId == 0) nextId = 1;
-    uv_poll_t* p = cast(uv_poll_t*) malloc(uv_handle_size(UV_POLL));
-    if (p is null || uv_poll_init_socket(rt.loop, p, j.fd) != 0)
+    if (!installJob(s, j))
     {
-        if (p !is null) free(p);
-        s.used = true;   // releaseSock requires a used slot to clean up
-        releaseSock(s);
         JSValue err = makeError(rt.ctx, "TLS poll init failed", "ERR_TLS_INIT", null, null);
         JSValue[2] argv = [err, jsUndefined()];
         tlsCall(rt, j.cb, argv.ptr, 2, true);
         freeJob(j);
+        dispatchPending(s);
         return;
     }
-    s.poll = p;
-    uv_handle_set_data(cast(uv_handle_t*) p, s);
-    uv_poll_start(p, UV_READABLE | UV_WRITABLE, &tlsPollCb);
     JSValue[2] argv = [jsNull(), jsInt(cast(int) s.id)];
     tlsCall(rt, j.cb, argv.ptr, 2, true);
     freeJob(j);
@@ -1175,11 +1294,42 @@ private extern(C) JSValue jsTlsCloseImpl(JSContext* ctx, JSValueConst, int argc,
 extern(C) JSValue jsTlsClose(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
 { return guarded!jsTlsCloseImpl(ctx, thisVal, argc, argv); }
 
+// Pooled idle TLS sockets are unrefed so they cannot keep the process alive;
+// reuse refs them again. Mirrors net.Socket.ref/unref.
+private extern(C) JSValue jsTlsRefImpl(JSContext* ctx, JSValueConst, int argc,
+                                       JSValueConst* argv) nothrow @nogc
+{
+    int rawId = 0;
+    if (argc < 1 || !toInt32(ctx, argv[0], &rawId))
+        return throwTypeError(ctx, "tls.ref requires an id");
+    TlsSock* s = findSock(runtimeOf(ctx), cast(uint) rawId);
+    if (s !is null && s.poll !is null)
+        uv_ref(cast(uv_handle_t*) s.poll);
+    return jsUndefined();
+}
+extern(C) JSValue jsTlsRef(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+{ return guarded!jsTlsRefImpl(ctx, thisVal, argc, argv); }
+
+private extern(C) JSValue jsTlsUnrefImpl(JSContext* ctx, JSValueConst, int argc,
+                                         JSValueConst* argv) nothrow @nogc
+{
+    int rawId = 0;
+    if (argc < 1 || !toInt32(ctx, argv[0], &rawId))
+        return throwTypeError(ctx, "tls.unref requires an id");
+    TlsSock* s = findSock(runtimeOf(ctx), cast(uint) rawId);
+    if (s !is null && s.poll !is null)
+        uv_unref(cast(uv_handle_t*) s.poll);
+    return jsUndefined();
+}
+extern(C) JSValue jsTlsUnref(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+{ return guarded!jsTlsUnrefImpl(ctx, thisVal, argc, argv); }
+
 void tlsCloseAll(Runtime* self) @nogc nothrow
 {
     foreach (ref s; socks)
         if (s.used && s.rt is self)
             releaseSock(&s);
+    abandonPending(self);
 }
 
 
@@ -1342,6 +1492,8 @@ bool installTls(Runtime* self, JSValueConst djs) @nogc nothrow
         && addNativeFunction(ctx, obj, "write", &jsTlsWrite, 3)
         && addNativeFunction(ctx, obj, "end", &jsTlsEnd, 1)
         && addNativeFunction(ctx, obj, "close", &jsTlsClose, 1)
+        && addNativeFunction(ctx, obj, "ref", &jsTlsRef, 1)
+        && addNativeFunction(ctx, obj, "unref", &jsTlsUnref, 1)
         && addNativeFunction(ctx, obj, "acceptFd", &jsAcceptFd, 3)
         && addNativeFunction(ctx, obj, "alpn", &jsTlsAlpn, 1)
         && addNativeFunction(ctx, obj, "peerAuthorized", &jsTlsPeerAuthorized, 1);

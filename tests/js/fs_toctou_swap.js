@@ -14,9 +14,11 @@ fs.writeFileSync(target, 'REAL');
 fs.writeFileSync(decoy, 'DECOY');
 
 // 1. Occupy every threadpool worker: each readFile blocks in open() on a
-//    FIFO with no writer yet. The default pool has four threads.
+//    FIFO with no writer yet. The runtime sets a larger default than libuv's
+//    four, so size the blockade from the effective setting.
+const poolSize = Math.max(1, Number(process.env.UV_THREADPOOL_SIZE) || 4);
 const fifos = [];
-for (let i = 0; i < 4; i++) {
+for (let i = 0; i < poolSize; i++) {
     const f = path.join(dir, 'f' + i + '.fifo');
     spawnSync('mkfifo', [f]);
     fifos.push(f);

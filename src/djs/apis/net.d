@@ -1034,6 +1034,37 @@ private void closeListenerHandle(Listener* l) @nogc nothrow
 
 private extern(C) void handleOnlyCloseCb(uv_handle_t* h) nothrow @nogc { free(h); }
 
+// libuv reference counting for pooled idle sockets. Node's agent unrefs idle
+// sockets so a keep-alive connection cannot hold the event loop open after
+// the script has finished; reuse refs the socket again.
+private extern(C) JSValue jsNetRefImpl(JSContext* ctx, JSValueConst, int argc,
+                                       JSValueConst* argv) nothrow @nogc
+{
+    int id = 0;
+    if (argc < 1 || !toInt32(ctx, argv[0], &id))
+        return throwTypeError(ctx, "ref requires a socket id");
+    NetSock* s = findSock(cast(uint) id);
+    if (s !is null && s.poll !is null)
+        uv_ref(cast(uv_handle_t*) s.poll);
+    return jsUndefined();
+}
+extern(C) JSValue jsNetRef(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+{ return guarded!jsNetRefImpl(ctx, thisVal, argc, argv); }
+
+private extern(C) JSValue jsNetUnrefImpl(JSContext* ctx, JSValueConst, int argc,
+                                         JSValueConst* argv) nothrow @nogc
+{
+    int id = 0;
+    if (argc < 1 || !toInt32(ctx, argv[0], &id))
+        return throwTypeError(ctx, "unref requires a socket id");
+    NetSock* s = findSock(cast(uint) id);
+    if (s !is null && s.poll !is null)
+        uv_unref(cast(uv_handle_t*) s.poll);
+    return jsUndefined();
+}
+extern(C) JSValue jsNetUnref(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+{ return guarded!jsNetUnrefImpl(ctx, thisVal, argc, argv); }
+
 // Hand a socket's descriptor to another subsystem (TLS) without closing it.
 // The poll handle is stopped and freed; the caller owns the fd afterwards.
 private extern(C) JSValue jsNetDetachFdImpl(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) nothrow @nogc
@@ -1262,6 +1293,8 @@ bool installNet(Runtime* self, JSValueConst djs) @nogc nothrow
         && addNativeFunction(ctx, obj, "shutdown", &jsNetShutdown, 1)
         && addNativeFunction(ctx, obj, "end", &jsNetShutdown, 1)
         && addNativeFunction(ctx, obj, "close", &jsNetClose, 1)
+        && addNativeFunction(ctx, obj, "ref", &jsNetRef, 1)
+        && addNativeFunction(ctx, obj, "unref", &jsNetUnref, 1)
         && addNativeFunction(ctx, obj, "listen", &jsNetListen, 3)
         && addNativeFunction(ctx, obj, "listenerPort", &jsNetListenerPort, 1)
         && addNativeFunction(ctx, obj, "closeListener", &jsNetCloseListener, 1)

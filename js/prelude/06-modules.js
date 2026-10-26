@@ -125,13 +125,26 @@
         }
     };
 
+    function httpsRequest(input, options, cb) {
+        // Node's https module implies the https: scheme for an options object.
+        // http.normalizeHttpOptions defaults to http:, so set it before the
+        // shared client sees the request (this also selects the TLS agent).
+        if (input && typeof input === 'object' && !(typeof URL === 'function' && input instanceof URL) && !input.protocol) {
+            var copy = {};
+            for (var k in input) copy[k] = input[k];
+            copy.protocol = 'https:';
+            if (!copy.port) copy.port = 443;
+            return request(copy, options, cb);
+        }
+        return request(input, options, cb);
+    }
     var httpsModule = {
-        request: function () {
-            var req = request.apply(null, arguments);
-            return req;
+        request: function (input, options, cb) {
+            return httpsRequest(input, options, cb);
         },
-        get: function () {
-            var req = get.apply(null, arguments);
+        get: function (input, options, cb) {
+            var req = httpsRequest(input, options, cb);
+            req.end();
             return req;
         },
         createServer: function () {

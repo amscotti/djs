@@ -442,6 +442,16 @@ private int runMain(string[] args)
 
 int main(string[] args)
 {
+    // TLS handshakes (and async fs/crypto work) run on libuv's global
+    // threadpool, whose default of 4 serialises network-bound clients such as
+    // a Promise.all over a few hundred fetches. Set a network-friendly default
+    // before libuv initialises the pool. An existing user setting still wins;
+    // this is a runtime default, not a flag users must remember.
+    version (Posix)
+    {
+        import core.sys.posix.stdlib : setenv;
+        setenv("UV_THREADPOOL_SIZE", "32", 0);
+    }
     try
     {
         return runMain(args);

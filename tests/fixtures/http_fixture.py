@@ -30,8 +30,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/trunc":
             self.send_response(200)
             self.send_header("Content-Length", "100")
+            # A body that cannot satisfy its declared length must terminate
+            # the connection; keeping it alive would leave the peer waiting
+            # for bytes that will never arrive.
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(b"short")
+            self.close_connection = True
         elif self.path == "/chunked":
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")

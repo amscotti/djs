@@ -1309,6 +1309,14 @@
     Socket.prototype.uncork = function () { this._corked = false; return this; };
     Socket.prototype.setNoDelay = function () { return this; };
     Socket.prototype.setKeepAlive = function () { return this; };
+    Socket.prototype.ref = function () {
+        if (this._id) __djs.net.ref(this._id);
+        return this;
+    };
+    Socket.prototype.unref = function () {
+        if (this._id) __djs.net.unref(this._id);
+        return this;
+    };
     Socket.prototype.setTimeout = function (ms, cb) {
         var self = this;
         if (this._timer) clearTimeout(this._timer);

@@ -142,15 +142,48 @@
     };
     ClientRequest.prototype.setSocketKeepAlive = function () { return this; };
     ClientRequest.prototype.flushHeaders = function () { return this; };
+    ClientRequest.prototype._createSocket = function () {
+        var o = this.options;
+        var agent = this._agent;
+        if (agent && typeof agent.createConnection === 'function') {
+            return agent.createConnection({
+                port: o.port,
+                host: o.hostname,
+                hostname: o.hostname,
+                protocol: o.protocol,
+                servername: o.servername,
+                rejectUnauthorized: o.rejectUnauthorized,
+                ca: o.ca, caFile: o.caFile,
+                cert: o.cert, certFile: o.certFile,
+                key: o.key, keyFile: o.keyFile,
+                alpn: o.alpn
+            });
+        }
+        return o.protocol === 'https:'
+            ? tlsModule.connect({
+                port: o.port,
+                host: o.hostname,
+                servername: o.servername || o.hostname,
+                rejectUnauthorized: o.rejectUnauthorized !== false,
+                ca: o.ca, caFile: o.caFile,
+                cert: o.cert, certFile: o.certFile,
+                key: o.key, keyFile: o.keyFile,
+                alpn: o.alpn
+              })
+            : netModule.connect(o.port, o.hostname);
+    };
     ClientRequest.prototype.end = function (data, enc) {
         if (data !== undefined && data !== null) this.write(data, enc);
         if (this._ended || this._aborted) return this;
         this._ended = true;
-        var self = this;
         var body = Buffer.concat(this._chunks);
         var headers = this._headers;
         headers.host = headers.host || this.options.hostname;
-        headers.connection = headers.connection || 'close';
+        var agent = this.options.agent === false ? null : (this.options.agent || defaultAgentFor(this.options));
+        if (agent && agent.keepAlive) headers.connection = headers.connection || 'keep-alive';
+        else headers.connection = headers.connection || 'close';
+        this._connection = String(headers.connection).toLowerCase();
+        this._keepAlive = this._connection !== 'close' && this._connection !== 'upgrade';
         if (!headers['content-length'] && body.length) headers['content-length'] = String(body.length);
         for (var hk in headers) headers[hk] = checkHeader(hk, headers[hk]);
         // The request line is assembled verbatim; validate the method token
@@ -164,36 +197,34 @@
         var head = this.method + ' ' + this.path + ' HTTP/1.1\r\n';
         for (var h in headers) head += h + ': ' + headers[h] + '\r\n';
         head += '\r\n';
-        var raw = Buffer.concat([Buffer.from(head, 'utf8'), body]);
-        var agent = this.options.agent === false ? null : (this.options.agent || globalAgent);
-        var socket = null;
-        if (agent && typeof agent.createConnection === 'function') {
-            socket = agent.createConnection({
-                port: this.options.port,
-                host: this.options.hostname,
-                hostname: this.options.hostname,
-                protocol: this.options.protocol,
-                servername: this.options.servername,
-                rejectUnauthorized: this.options.rejectUnauthorized
-            });
+        this._raw = Buffer.concat([Buffer.from(head, 'utf8'), body]);
+        this._agent = agent;
+        this._agentName = null;
+        this._socketStarted = false;
+        this._detach = null;
+        if (!agent || typeof agent.addRequest !== 'function') {
+            this._start(this._createSocket(), false, null, null);
+        } else {
+            agent.addRequest(this, this.options);
         }
-        if (!socket) {
-            socket = this.options.protocol === 'https:'
-                ? tlsModule.connect({
-                    port: this.options.port,
-                    host: this.options.hostname,
-                    servername: this.options.servername || this.options.hostname,
-                    rejectUnauthorized: this.options.rejectUnauthorized !== false
-                  })
-                : netModule.connect(this.options.port, this.options.hostname);
-        }
+        return this;
+    };
+    ClientRequest.prototype._start = function (socket, reused, agent, name) {
+        if (this._aborted) { socket.destroy(); return this; }
+        var self = this;
+        this._socketStarted = true;
         this.socket = socket;
-        // Do not half-close: the server must be able to send a response after
-        // the request. The Connection: close header ends the exchange.
-        socket.on('connect', function () {
+        this._agent = agent;
+        this._agentName = name;
+        this._reused = !!reused;
+        var raw = this._raw;
+        var sent = false;
+        function send() {
+            if (sent) return;
+            sent = true;
             if (self._aborted) { socket.destroy(); return; }
             socket.write(raw);
-        });
+        }
         var state = {
             headBuf: null,
             msg: null,
@@ -202,19 +233,48 @@
             chunkBuf: Buffer.alloc(0),
             chunkPhase: "size",
             done: false,
-            total: 0
+            total: 0,
+            reusable: true
         };
+        function clearRequestTimer() {
+            if (self._timeout) { clearTimeout(self._timeout); self._timeout = null; }
+        }
+        function detach() {
+            socket.removeListener("data", onData);
+            socket.removeListener("end", onEnd);
+            socket.removeListener("error", onError);
+            socket.removeListener("close", onClose);
+            socket.removeListener("connect", send);
+        }
+        function release(reusable) {
+            detach();
+            if (self._detach === detach) self._detach = null;
+            if (self.socket === socket) self.socket = null;
+            var a = self._agent;
+            var n = self._agentName;
+            self._agentName = null;
+            if (a) a.releaseSocket(socket, n, reusable);
+            else socket.destroy();
+        }
         function finishResponse() {
             if (state.done) return;
             state.done = true;
-            if (self._timeout) { clearTimeout(self._timeout); self._timeout = null; }
+            clearRequestTimer();
             if (state.msg) { state.msg.complete = true; state.msg.push(null); }
+            release(state.reusable && self._keepAlive);
         }
         function failResponse(err) {
             if (state.done) return;
             state.done = true;
-            if (self._timeout) { clearTimeout(self._timeout); self._timeout = null; }
+            clearRequestTimer();
+            detach();
+            if (self._detach === detach) self._detach = null;
+            if (self.socket === socket) self.socket = null;
+            var a = self._agent;
+            var n = self._agentName;
+            self._agentName = null;
             socket.destroy();
+            if (a) a.releaseSocket(socket, n, false);
             self.emit("error", err);
         }
         function pushBody(buf) {
@@ -232,14 +292,19 @@
             var statusCode = Number(statusLine[1] || 0);
             if (!statusCode) { var me0 = new Error("malformed HTTP status line"); me0.code = "ERR_HTTP_INVALID_RESPONSE"; throw me0; }
             var message = new IncomingMessage(statusCode, statusLine.slice(2).join(" "), headerMap(lines.join("\r\n")));
+            message.httpVersion = String(statusLine[0] || "HTTP/1.1").replace(/^HTTP\//, "");
             state.msg = message;
-            if (statusCode === 101) { state.mode = "upgrade"; return; }
+            var conn = String(message.headers["connection"] || "").toLowerCase();
+            var connTokens = conn.split(",").map(function (s) { return s.trim(); });
+            if (connTokens.indexOf("close") >= 0) state.reusable = false;
+            if (message.httpVersion === "1.0" && connTokens.indexOf("keep-alive") < 0) state.reusable = false;
+            if (statusCode === 101) { state.mode = "upgrade"; state.reusable = false; return; }
             var te = (message.headers["transfer-encoding"] || "").toLowerCase();
             var cl = message.headers["content-length"];
             if (self.method === "HEAD" || statusCode === 204 || statusCode === 304) state.mode = "none";
             else if (te === "chunked") state.mode = "chunked";
             else if (cl !== undefined) { state.mode = "length"; state.remaining = Number(cl); }
-            else state.mode = "close";
+            else { state.mode = "close"; state.reusable = false; }
             self.emit("response", message);
             if (state.mode === "none") { finishResponse(); return; }
             if (state.mode === "length" && state.remaining <= 0) finishResponse();
@@ -291,12 +356,24 @@
                 }
             }
         }
-        socket.on("error", function (e) {
+        function onError(e) {
             if (state.done) return;
-            state.done = true;
-            self.emit("error", e);
-        });
-        socket.on("data", function (chunk) {
+            failResponse(e);
+        }
+        function onClose() {
+            if (state.done) return;
+            // TLS reports EOF as close and may do so before the stream emits
+            // end. For a close-delimited body that close *is* the boundary;
+            // length/chunked bodies still incomplete here are truncation.
+            if (state.msg && (state.mode === "close" || state.mode === "none")) {
+                finishResponse();
+                return;
+            }
+            var e = new Error("socket closed before response");
+            e.code = "ECONNRESET";
+            failResponse(e);
+        }
+        function onData(chunk) {
             if (state.done) return;
             var data = chunk;
             if (!state.msg) {
@@ -316,6 +393,12 @@
                 state.headBuf = null;
                 if (state.mode === "upgrade") {
                     state.done = true;
+                    clearRequestTimer();
+                    detach();
+                    if (self._detach === detach) self._detach = null;
+                    if (self.socket === socket) self.socket = null;
+                    if (self._agent) self._agent.forgetSocket(socket, self._agentName);
+                    self._agentName = null;
                     self.emit("upgrade", state.msg, socket, data);
                     return;
                 }
@@ -336,8 +419,8 @@
                 return;
             }
             pushBody(data);
-        });
-        socket.on("end", function () {
+        }
+        function onEnd() {
             if (state.done) return;
             if (!state.msg) {
                 var me = new Error("malformed HTTP response"); me.code = "ERR_HTTP_INVALID_RESPONSE"; failResponse(me); return;
@@ -351,7 +434,29 @@
                 var ce = new Error("truncated HTTP body"); ce.code = "ERR_HTTP_BODY_TRUNCATED"; failResponse(ce); return;
             }
             finishResponse();
-        });
+        }
+        this._detach = detach;
+        socket.on("data", onData);
+        socket.on("end", onEnd);
+        socket.on("error", onError);
+        socket.on("close", onClose);
+        if (reused || !socket.connecting) send();
+        else socket.once("connect", send);
+        return this;
+    };
+    ClientRequest.prototype.abort = ClientRequest.prototype.destroy = function () {
+        this._aborted = true;
+        if (this._timeout) { clearTimeout(this._timeout); this._timeout = null; }
+        if (this._detach) { this._detach(); this._detach = null; }
+        var socket = this.socket;
+        this.socket = null;
+        if (this._agent && !this._socketStarted) this._agent.removeRequest(this);
+        if (socket) {
+            socket.destroy();
+            if (this._agent) this._agent.releaseSocket(socket, this._agentName, false);
+        }
+        this._agentName = null;
+        this.emit('abort');
         return this;
     };
 
@@ -369,10 +474,13 @@
     }
 
     // ---- http.Agent ---------------------------------------------------
-    // djs dials one socket per request, so the agent is mostly a compatibility
-    // object: it carries options that libraries read, and `createConnection`
-    // is the hook proxy agents (https-proxy-agent et al.) override to route
-    // traffic. Socket pooling is not implemented yet.
+    // A real keep-alive pool. Each origin has an active list, an idle/free
+    // list and a FIFO request queue. Fetch uses the https global agent, so a
+    // Promise.all over hundreds of URLs reuses a bounded number of
+    // connections instead of paying DNS + TCP + TLS for every request.
+    //
+    // Idle sockets are unrefed: like Node, a pooled connection must not keep
+    // the process alive after the script has finished.
     function Agent(options) {
         options = options || {};
         this.options = options;
@@ -388,6 +496,154 @@
         this.freeSockets = {};
         this.requests = {};
     }
+    Agent.prototype.getName = function (options) {
+        var o = options || {};
+        var protocol = o.protocol || this.protocol;
+        var host = String(o.hostname || o.host || 'localhost').toLowerCase();
+        var port = Number(o.port || (protocol === 'https:' ? 443 : 80));
+        var servername = o.servername || (protocol === 'https:' ? host : '');
+        var verify = o.rejectUnauthorized === false ? '0' : '1';
+        return protocol + '//' + host + ':' + port + '|' + servername + '|' + verify;
+    };
+    Agent.prototype._canPool = function (req, options) {
+        if (!this.keepAlive || !req || !req._keepAlive) return false;
+        if (req.method === 'CONNECT') return false;
+        var o = options || {};
+        // Per-request trust material makes reuse ambiguous; keep those
+        // requests on a dedicated socket rather than risking a socket built
+        // with a different CA or client certificate.
+        if (o.ca || o.caFile || o.cert || o.certFile || o.key || o.keyFile || o.pfx || o.alpn) return false;
+        return true;
+    };
+    Agent.prototype._clearIdle = function (socket) {
+        if (!socket) return;
+        if (socket._djsIdleTimer) { clearTimeout(socket._djsIdleTimer); socket._djsIdleTimer = null; }
+        if (socket._djsIdleClose) { socket.removeListener('close', socket._djsIdleClose); socket._djsIdleClose = null; }
+        if (socket._djsIdleError) { socket.removeListener('error', socket._djsIdleError); socket._djsIdleError = null; }
+    };
+    Agent.prototype._removeFree = function (socket, name) {
+        var free = this.freeSockets[name];
+        if (free) {
+            var i = free.indexOf(socket);
+            if (i >= 0) free.splice(i, 1);
+        }
+        this._clearIdle(socket);
+    };
+    Agent.prototype._watchIdle = function (socket, name) {
+        var self = this;
+        this._clearIdle(socket);
+        socket._djsIdleTimer = setTimeout(function () {
+            socket._djsIdleTimer = null;
+            self._removeFree(socket, name);
+            socket.destroy();
+        }, this.keepAliveMsecs);
+        if (socket._djsIdleTimer && typeof socket._djsIdleTimer.unref === 'function')
+            socket._djsIdleTimer.unref();
+        socket._djsIdleClose = function () { self._removeFree(socket, name); };
+        socket.once('close', socket._djsIdleClose);
+        socket._djsIdleError = function () {
+            self._removeFree(socket, name);
+            socket.destroy();
+        };
+        socket.on('error', socket._djsIdleError);
+        if (typeof socket.unref === 'function') socket.unref();
+    };
+    Agent.prototype._nextRequest = function (name) {
+        var queue = this.requests[name];
+        if (!queue) return null;
+        while (queue.length) {
+            var entry = queue.shift();
+            if (entry.req && !entry.req._aborted) return entry;
+        }
+        return null;
+    };
+    Agent.prototype.addRequest = function (req, options) {
+        var name = this.getName(options);
+        if (!this._canPool(req, options)) {
+            var one = this.createConnection(options);
+            req._start(one, false, this, null);
+            return;
+        }
+        var free = this.freeSockets[name];
+        while (free && free.length) {
+            var socket = free.pop();
+            this._clearIdle(socket);
+            if (socket.destroyed || socket.connecting) { socket.destroy(); continue; }
+            this.reuseSocket(socket, options);
+            (this.sockets[name] || (this.sockets[name] = [])).push(socket);
+            req._start(socket, true, this, name);
+            return;
+        }
+        var active = this.sockets[name] || (this.sockets[name] = []);
+        if (active.length < this.maxSockets) {
+            var fresh = this.createConnection(options);
+            active.push(fresh);
+            req._start(fresh, false, this, name);
+            return;
+        }
+        (this.requests[name] || (this.requests[name] = [])).push({ req: req, options: options });
+    };
+    Agent.prototype._dispatch = function (name) {
+        if (this._destroying) return;
+        var queue = this.requests[name];
+        if (!queue || !queue.length) return;
+        var active = this.sockets[name] || (this.sockets[name] = []);
+        while (queue.length && active.length < this.maxSockets) {
+            var entry = this._nextRequest(name);
+            if (!entry) return;
+            var socket;
+            try { socket = this.createConnection(entry.options); }
+            catch (e) { entry.req.emit('error', e); continue; }
+            active.push(socket);
+            entry.req._start(socket, false, this, name);
+        }
+    };
+    Agent.prototype.releaseSocket = function (socket, name, reusable) {
+        if (!socket) return;
+        if (this._destroying) { socket.destroy(); return; }
+        if (!name) { socket.destroy(); return; }
+        var active = this.sockets[name];
+        if (active) {
+            var ai = active.indexOf(socket);
+            if (ai >= 0) active.splice(ai, 1);
+        }
+        this._clearIdle(socket);
+        if (this.keepAlive && reusable && !socket.destroyed) {
+            var entry = this._nextRequest(name);
+            if (entry) {
+                this.reuseSocket(socket, entry.options);
+                (this.sockets[name] || (this.sockets[name] = [])).push(socket);
+                entry.req._start(socket, true, this, name);
+                return;
+            }
+            var free = this.freeSockets[name] || (this.freeSockets[name] = []);
+            if (free.length < this.maxFreeSockets) {
+                this.keepSocketAlive(socket);
+                free.push(socket);
+                this._watchIdle(socket, name);
+                return;
+            }
+        }
+        socket.destroy();
+        this._dispatch(name);
+    };
+    Agent.prototype.forgetSocket = function (socket, name) {
+        if (!name) return;
+        var active = this.sockets[name];
+        if (active) {
+            var ai = active.indexOf(socket);
+            if (ai >= 0) active.splice(ai, 1);
+        }
+        this._clearIdle(socket);
+    };
+    Agent.prototype.removeRequest = function (req) {
+        for (var name in this.requests) {
+            var queue = this.requests[name] || [];
+            for (var i = 0; i < queue.length; i++) {
+                if (queue[i].req === req) { queue.splice(i, 1); return; }
+            }
+        }
+    };
     Agent.prototype.createConnection = function (options) {
         var o = options || this.options || {};
         var protocol = o.protocol || this.protocol;
@@ -396,33 +652,61 @@
                 port: o.port,
                 host: o.hostname || o.host,
                 servername: o.servername || o.hostname || o.host,
-                rejectUnauthorized: o.rejectUnauthorized !== false
+                rejectUnauthorized: o.rejectUnauthorized !== false,
+                ca: o.ca, caFile: o.caFile,
+                cert: o.cert, certFile: o.certFile,
+                key: o.key, keyFile: o.keyFile,
+                alpn: o.alpn
             });
         }
         return netModule.connect(o.port || this.defaultPort, o.hostname || o.host);
     };
-    // Node's API surface for agents; pooling state stays empty on this build.
-    Agent.prototype.addRequest = function () { };
-    Agent.prototype.getName = function (options) {
-        var o = options || {};
-        return (o.host || o.hostname || 'localhost') + ':' + (o.port || this.defaultPort) + ':' +
-            (o.localAddress || '') + ':' + (o.family || 0);
-    };
     Agent.prototype.destroy = function () {
+        var self = this;
+        this._destroying = true;
         for (var k in this.sockets) {
-            var list = this.sockets[k] || [];
-            for (var i = 0; i < list.length; i++) if (list[i] && typeof list[i].destroy === 'function') list[i].destroy();
+            var active = (this.sockets[k] || []).slice();
+            for (var i = 0; i < active.length; i++) {
+                var s = active[i];
+                if (!s) continue;
+                self._clearIdle(s);
+                if (typeof s.destroy === 'function') s.destroy();
+            }
         }
         for (var f in this.freeSockets) {
-            var free = this.freeSockets[f] || [];
-            for (var j = 0; j < free.length; j++) if (free[j] && typeof free[j].destroy === 'function') free[j].destroy();
+            var free = (this.freeSockets[f] || []).slice();
+            for (var j = 0; j < free.length; j++) {
+                var fs = free[j];
+                if (!fs) continue;
+                self._clearIdle(fs);
+                if (typeof fs.destroy === 'function') fs.destroy();
+            }
+        }
+        for (var r in this.requests) {
+            var queue = this.requests[r] || [];
+            while (queue.length) {
+                var entry = queue.shift();
+                var err = new Error('agent destroyed');
+                err.code = 'ERR_AGENT_DESTROYED';
+                try { if (entry.req) entry.req.emit('error', err); } catch (e) { /* no listener */ }
+            }
         }
         this.sockets = {};
         this.freeSockets = {};
         this.requests = {};
+        this._destroying = false;
     };
-    Agent.prototype.keepSocketAlive = function (socket) { return false; };
-    Agent.prototype.reuseSocket = function (socket) { return socket; };
+    Agent.prototype.keepSocketAlive = function (socket) {
+        if (typeof socket.setKeepAlive === 'function') socket.setKeepAlive(true, this.keepAliveMsecs);
+        if (typeof socket.setTimeout === 'function') socket.setTimeout(0);
+        return true;
+    };
+    Agent.prototype.reuseSocket = function (socket, options) {
+        if (typeof socket.ref === 'function') socket.ref();
+        if (typeof socket.setTimeout === 'function') socket.setTimeout(0);
+        if (typeof socket.setNoDelay === 'function') socket.setNoDelay(true);
+        return socket;
+    };
 
     var STATUS_CODES = {
         100: 'Continue', 101: 'Switching Protocols', 102: 'Processing', 103: 'Early Hints',
@@ -451,7 +735,16 @@
         'REBIND', 'REPORT', 'SEARCH', 'SOURCE', 'SUBSCRIBE', 'TRACE', 'UNBIND', 'UNLINK',
         'UNLOCK', 'UNSUBSCRIBE'];
 
-    var globalAgent = new Agent({ protocol: 'http:', defaultPort: 80 });
+    var globalAgent = new Agent({
+        protocol: 'http:', defaultPort: 80,
+        keepAlive: true, keepAliveMsecs: 4000, maxSockets: 128
+    });
+    function defaultAgentFor(options) {
+        if (options && options.protocol === 'https:' &&
+            typeof httpsModule !== 'undefined' && httpsModule.globalAgent)
+            return httpsModule.globalAgent;
+        return globalAgent;
+    }
     var httpModule = {
         request: request,
         get: get,

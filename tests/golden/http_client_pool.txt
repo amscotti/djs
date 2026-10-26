@@ -1,0 +1,8 @@
+http burst 4 20
+http sequential ok 4
+http close 5
+http after-close ok 5
+fetch burst 9 20
+fetch sequential ok 9
+https burst 2 10
+https sequential secure 2

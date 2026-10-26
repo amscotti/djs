@@ -46,6 +46,15 @@
         return this;
     };
     TlsSocket.prototype.setNoDelay = function () { return this; };
+    TlsSocket.prototype.setKeepAlive = function () { return this; };
+    TlsSocket.prototype.ref = function () {
+        if (this._id) __djs.tls.ref(this._id);
+        return this;
+    };
+    TlsSocket.prototype.unref = function () {
+        if (this._id) __djs.tls.unref(this._id);
+        return this;
+    };
     // A real idle timer, re-armed on every read and write: HttpConnection
     // arms headersTimeout/requestTimeout through this, and a no-op here
     // meant a slowloris client could hold a TLS server socket forever.
@@ -147,8 +156,19 @@
     };
 
     httpsModule.createServer = function (opts, handler) { return new HttpServer(opts || {}, handler); };
-    httpsModule.Agent = httpModule.Agent;
-    httpsModule.globalAgent = new httpModule.Agent({ protocol: 'https:', defaultPort: 443 });
+    function HttpsAgent(options) {
+        var opts = {};
+        if (options) for (var k in options) opts[k] = options[k];
+        if (!opts.protocol) opts.protocol = 'https:';
+        if (!opts.defaultPort) opts.defaultPort = 443;
+        httpModule.Agent.call(this, opts);
+    }
+    HttpsAgent.prototype = Object.create(httpModule.Agent.prototype);
+    HttpsAgent.prototype.constructor = HttpsAgent;
+    httpsModule.Agent = HttpsAgent;
+    httpsModule.globalAgent = new HttpsAgent({
+        keepAlive: true, keepAliveMsecs: 4000, maxSockets: 128
+    });
     httpsModule.STATUS_CODES = httpModule.STATUS_CODES;
     httpsModule.METHODS = httpModule.METHODS;
     httpsModule.Server = HttpServer;

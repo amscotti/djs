@@ -118,6 +118,22 @@
             queueMicrotask(function () { if (!self._flowing) self.resume(); });
         return r;
     };
+    // EventEmitter.once() installs the listener directly, bypassing the
+    // flowing-mode switch above. Route one-shot data listeners through on()
+    // and remove them after the first chunk.
+    Readable.prototype.once = function (name, fn) {
+        if (name !== 'data')
+            return EventEmitter.prototype.once.call(this, name, fn);
+        if (typeof fn !== 'function')
+            throw new TypeError('The "listener" argument must be of type function');
+        var self = this;
+        function onceData() {
+            self.removeListener('data', onceData);
+            return fn.apply(this, arguments);
+        }
+        onceData.listener = fn;
+        return this.on('data', onceData);
+    };
     Readable.prototype.pipe = function (dest, opts) {
         var self = this;
         this.on('data', function (chunk) { if (!dest.write(chunk)) self.pause(); });
