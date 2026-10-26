@@ -11,12 +11,13 @@ import core.sys.posix.fcntl : FD_CLOEXEC, F_SETFD, F_SETFL, O_NONBLOCK, fcntl;
 import core.sys.posix.poll : POLLERR, POLLHUP, POLLIN, POLLOUT, nfds_t, poll, pollfd;
 import core.sys.posix.signal : SIGKILL, SIGTERM, kill;
 import core.sys.posix.sys.wait : WEXITSTATUS, WIFEXITED, WIFSIGNALED, WTERMSIG, waitpid;
-import core.sys.posix.unistd : _exit, chdir, close, dup2, environ, execvp, fork, pipe, read, write;
+import core.sys.posix.unistd : _exit, chdir, close, dup2, execvp, fork, pipe, read, write;
 
-extern(C) int execvpe(const(char)* file, char** argv, char** envp) nothrow @nogc;
 import core.sys.posix.sys.types : pid_t, ssize_t;
 import core.sys.posix.sys.stat : S_ISDIR, stat, stat_t;
-import core.sys.posix.time : CLOCK_MONOTONIC, clock_gettime, timespec;
+import core.sys.posix.time : timespec;
+
+import djs.platform : CLOCK_MONOTONIC, clock_gettime, environPtr;
 
 import djs.bindings.quickjs;
 import djs.bindings.value;
@@ -24,6 +25,85 @@ import djs.permissions : Perm, permissionCheck, permissionDenied, permissionHas,
 import djs.runtime : Runtime, guarded, runtimeOf, runtimeReportUncaught;
 import djs.registry : CallbackSlot, registryAdd, registryLookup, registryRelease;
 import djs.loop.libuv;
+
+// Execute `file`, searching PATH when it has no slash, with an explicit
+// environment. glibc provides execvpe; Darwin does not, so the portable
+// implementation below walks PATH manually. It runs in the forked child,
+// between fork() and execve(), so it must not allocate or call anything
+// unsafe: fixed stack buffers only.
+version (linux)
+{
+    private extern(C) int execvpe(const(char)* file, char** argv, char** envp) nothrow @nogc;
+}
+else
+{
+    private extern(C) int execve(const(char)* path, char** argv, char** envp) nothrow @nogc;
+    private extern(C) int access(const(char)* path, int mode) nothrow @nogc;
+    private extern(C) const(char)* getenv(const(char)* name) nothrow @nogc;
+
+    private enum int X_OK = 1;
+
+    private int execvpe(const(char)* file, char** argv, char** envp) nothrow @nogc
+    {
+        // A path with a slash is used as-is, like execvp.
+        bool hasSlash = false;
+        for (size_t i = 0; file[i] != 0; ++i)
+            if (file[i] == '/')
+            {
+                hasSlash = true;
+                break;
+            }
+        if (hasSlash)
+            return execve(file, argv, envp);
+
+        const(char)* pathEnv = getenv("PATH");
+        if (pathEnv is null)
+            pathEnv = "/usr/local/bin:/usr/bin:/bin";
+        char[4096] candidate = void;
+        size_t dirStart = 0;
+        while (true)
+        {
+            size_t dirEnd = dirStart;
+            while (pathEnv[dirEnd] != 0 && pathEnv[dirEnd] != ':')
+                dirEnd += 1;
+            size_t dirLen = dirEnd - dirStart;
+            if (dirLen == 0)
+            {
+                // Empty PATH element means the current directory.
+                dirLen = 1;
+                candidate[0] = '.';
+            }
+            else
+            {
+                size_t copy = dirLen < candidate.length ? dirLen : candidate.length;
+                for (size_t i = 0; i < copy; ++i)
+                    candidate[i] = pathEnv[dirStart + i];
+                dirLen = copy;
+            }
+            size_t o = dirLen;
+            bool fits = o + 1 < candidate.length;
+            if (fits)
+                candidate[o++] = '/';
+            for (size_t i = 0; fits && file[i] != 0; ++i)
+            {
+                if (o + 1 >= candidate.length)
+                    fits = false;
+                else
+                    candidate[o++] = file[i];
+            }
+            if (fits && o + 1 <= candidate.length)
+            {
+                candidate[o] = 0;
+                if (access(candidate.ptr, X_OK) == 0)
+                    execve(candidate.ptr, argv, envp);
+            }
+            if (pathEnv[dirEnd] == 0)
+                break;
+            dirStart = dirEnd + 1;
+        }
+        return -1;
+    }
+}
 
 private double monotonicMs() @nogc nothrow
 {
@@ -766,7 +846,7 @@ private extern(C) JSValue jsChildSpawnAsyncImpl(JSContext* ctx, JSValueConst, in
         dup2(inp[0], 0); dup2(outp[1], 1); dup2(errp[1], 2);
         close(outp[0]); close(outp[1]); close(errp[0]); close(errp[1]); close(inp[0]); close(inp[1]);
         if (cwd !is null && cwd[0] != 0) chdir(cwd);
-        execvpe(args[0], args, envp is null ? cast(char**) environ : envp);
+        execvpe(args[0], args, envp is null ? environPtr() : envp);
         _exit(127);
     }
     close(outp[1]); close(errp[1]); close(inp[0]);

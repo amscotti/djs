@@ -554,8 +554,8 @@ void permissionsSetNoPrompt(bool noPrompt) @nogc nothrow
 // a degraded mode). O_NOFOLLOW refuses a pre-planted symlink at the path.
 bool permissionsSetAudit(const(char)* path) @nogc nothrow
 {
-    import core.sys.posix.fcntl : O_APPEND, O_CREAT, O_CLOEXEC, O_NOFOLLOW,
-        O_WRONLY, open;
+    import core.sys.posix.fcntl : O_APPEND, O_CREAT, O_WRONLY, open;
+    import djs.platform : O_CLOEXEC, O_NOFOLLOW;
     if (auditFd >= 0)
     {
         import core.sys.posix.unistd : close;

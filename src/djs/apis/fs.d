@@ -5,19 +5,23 @@ import core.stdc.stdio : rename;
 import core.stdc.stdlib : calloc, free, malloc, realloc;
 import core.stdc.string : memchr, memcpy, strlen;
 import core.sys.posix.dirent : DIR, dirent, closedir, opendir, readdir;
-import core.sys.posix.fcntl : O_ACCMODE, O_APPEND, O_CLOEXEC, O_CREAT, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, open;
+import core.sys.posix.fcntl : O_ACCMODE, O_APPEND, O_CREAT, O_EXCL, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY, open;
 import core.sys.posix.stdlib : realpath;
 import core.sys.posix.sys.statvfs : statvfs, statvfs_t;
 import core.sys.posix.sys.stat : S_ISBLK, S_ISCHR, S_ISDIR, S_ISFIFO, S_ISLNK, S_ISREG, S_ISSOCK,
     chmod, fchmod, fstat, lstat, mkdir, stat, stat_t;
 import core.sys.posix.sys.types : off_t, ssize_t;
-import core.sys.posix.unistd : chown, close, fchown, fdatasync, fsync, ftruncate, link, pread, pwrite, read, readlink,
+import core.sys.posix.unistd : chown, close, fchown, fsync, ftruncate, link, pread, pwrite, read, readlink,
     rmdir, symlink, truncate, unlink, write;
-import core.sys.linux.sys.inotify : IN_ATTRIB, IN_CLOEXEC, IN_CREATE, IN_DELETE, IN_DELETE_SELF,
-    IN_MODIFY, IN_MOVE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_NONBLOCK, inotify_add_watch,
-    inotify_init1, inotify_rm_watch;
+version (linux)
+{
+    import core.sys.linux.sys.inotify : IN_ATTRIB, IN_CLOEXEC, IN_CREATE, IN_DELETE, IN_DELETE_SELF,
+        IN_MODIFY, IN_MOVE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_NONBLOCK, inotify_add_watch,
+        inotify_init1, inotify_rm_watch;
+}
 
 import djs.bindings.quickjs;
+import djs.platform : Mode, O_CLOEXEC, fdatasync;
 import djs.bindings.value;
 import djs.loop.libuv;
 import djs.registry;
@@ -449,7 +453,7 @@ private void doMkdir(FsWork* w) @nogc nothrow
     w.syscall = "mkdir";
     if (!w.recursive)
     {
-        if (mkdir(w.path, cast(uint) w.mode) != 0)
+        if (mkdir(w.path, cast(Mode) w.mode) != 0)
             w.err = errno;
         return;
     }
@@ -468,7 +472,7 @@ private void doMkdir(FsWork* w) @nogc nothrow
         if (tmp[i] != '/')
             continue;
         tmp[i] = 0;
-        if (mkdir(tmp, cast(uint) w.mode) != 0 && errno != EEXIST)
+        if (mkdir(tmp, cast(Mode) w.mode) != 0 && errno != EEXIST)
         {
             w.err = errno;
             free(tmp);
@@ -476,7 +480,7 @@ private void doMkdir(FsWork* w) @nogc nothrow
         }
         tmp[i] = '/';
     }
-    if (mkdir(tmp, cast(uint) w.mode) != 0)
+    if (mkdir(tmp, cast(Mode) w.mode) != 0)
     {
         if (errno != EEXIST)
             w.err = errno;
@@ -2186,7 +2190,7 @@ private extern(C) JSValue jsChmodSyncImpl(JSContext* ctx, JSValueConst, int argc
     if (!toInt32(ctx, argv[1], &mode)) { free(path); return jsException(); }
     if (!permissionCheck(Perm.write, path))
     { JSValue e = permissionThrow(ctx, Perm.write, path); free(path); return e; }
-    int rc = chmod(path, cast(uint) mode);
+    int rc = chmod(path, cast(Mode) mode);
     int err = errno;
     if (rc != 0)
     {
@@ -2397,7 +2401,7 @@ private extern(C) JSValue jsFchmodSyncImpl(JSContext* ctx, JSValueConst, int arg
         return jsException();
     if (!fdIssued(fd))
         return throwFsError(ctx, EBADF, "", "fchmod");
-    if (fchmod(fd, cast(uint) mode) != 0)
+    if (fchmod(fd, cast(Mode) mode) != 0)
         return throwFsError(ctx, errno, "", "fchmod");
     return jsUndefined();
 }
@@ -2479,6 +2483,8 @@ extern(C) JSValue jsOpenStart(JSContext* ctx, JSValueConst thisVal, int argc,
 { return guarded!jsOpenStartImpl(ctx, thisVal, argc, argv); }
 
 
+version (linux)
+{
 // ---- fs.watch (inotify) ---------------------------------------------------
 
 private struct WatchSlot
@@ -2639,6 +2645,31 @@ private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int arg
 }
 extern(C) JSValue jsWatchClose(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
 { return guarded!jsWatchCloseImpl(ctx, thisVal, argc, argv); }
+
+}
+else
+{
+    // fs.watch needs a native backend per platform (inotify on Linux,
+    // FSEvents/kqueue on Darwin). Until the Darwin backend lands, the
+    // surface throws the same code Node uses for platform gaps instead of
+    // exposing an inotify import that cannot compile.
+    private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int, JSValueConst*) nothrow @nogc
+    {
+        return throwError(ctx, makeError(ctx,
+            "fs.watch is not supported on this platform yet",
+            "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM", null, "watch"));
+    }
+    extern(C) JSValue jsWatchStart(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+    { return guarded!jsWatchStartImpl(ctx, thisVal, argc, argv); }
+
+    private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int, JSValueConst*) nothrow @nogc
+    {
+        // Nothing can have been started; keep close() a no-op.
+        return jsUndefined();
+    }
+    extern(C) JSValue jsWatchClose(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+    { return guarded!jsWatchCloseImpl(ctx, thisVal, argc, argv); }
+}
 
 bool installFs(Runtime* self, JSValueConst djs) @nogc nothrow
 {

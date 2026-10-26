@@ -94,11 +94,18 @@ dub build --build=release --compiler=ldc2 --config=macos
 ./djs --version
 ```
 
-`--config=macos` links Homebrew's OpenSSL/Brotli instead of the Linux
-sonames. Two known gaps: `process.memoryUsage().rss` reports peak RSS
-(`getrusage`) rather than current, and `integration.sh`/`gate.sh` are
-Linux-only (the release workflow runs a build and smoke test on macOS, not the
-full suite).
+**Toolchain:** macOS needs LDC **1.43 or newer** (Homebrew's `ldc`); the
+pinned 1.36 cannot run on current macOS releases, so
+`DJS_ALLOW_VERSION_DRIFT=1` is required and the Linux pins in `docs/PINS.md`
+do not apply. `--config=macos` links Homebrew's OpenSSL 3/Brotli/libuv instead
+of the Linux sonames; the release tarball therefore needs those Homebrew
+formulae at runtime.
+
+Known gaps on macOS: `fs.watch` is not implemented (it throws
+`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`), `process.memoryUsage().rss` reports
+peak RSS (`getrusage`) rather than current, and the resolver does not read
+`/etc/hosts`. `integration.sh`/`gate.sh` are Linux-only; the release workflow
+runs a build and smoke test on macOS, not the full suite.
 
 ## Usage
 

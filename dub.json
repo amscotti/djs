@@ -96,9 +96,50 @@
             "targetType": "executable",
             "mainSourceFile": "src/djs/main.d",
             "lflags": [
-                "-L/opt/homebrew/lib",
                 "-L/opt/homebrew/opt/openssl@3/lib",
                 "-L/opt/homebrew/opt/brotli/lib",
+                "-L/opt/homebrew/lib",
+                "-lcrypto",
+                "-lssl",
+                "-lbrotlienc",
+                "-lbrotlidec"
+            ]
+        },
+        {
+            "name": "unittest-macos",
+            "targetType": "executable",
+            "targetName": "djs-unittest",
+            "targetPath": ".dub/unittest",
+            "mainSourceFile": "tests/ut_main.d",
+            "excludedSourceFiles": [
+                "src/djs/main.d"
+            ],
+            "libs": [
+                "z"
+            ],
+            "lflags": [
+                "-L/opt/homebrew/opt/openssl@3/lib",
+                "-L/opt/homebrew/opt/brotli/lib",
+                "-L/opt/homebrew/lib",
+                "-lcrypto",
+                "-lssl",
+                "-lbrotlienc",
+                "-lbrotlidec"
+            ]
+        },
+        {
+            "name": "sanitize-macos",
+            "targetType": "executable",
+            "targetName": "djs-asan",
+            "targetPath": ".dub/asan",
+            "mainSourceFile": "src/djs/main.d",
+            "libs": [
+                "z"
+            ],
+            "lflags": [
+                "-L/opt/homebrew/opt/openssl@3/lib",
+                "-L/opt/homebrew/opt/brotli/lib",
+                "-L/opt/homebrew/lib",
                 "-lcrypto",
                 "-lssl",
                 "-lbrotlienc",

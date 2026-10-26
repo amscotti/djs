@@ -8,6 +8,7 @@ import core.stdc.errno : EAGAIN, EINTR, EWOULDBLOCK, errno;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memcpy;
 import core.sys.posix.arpa.inet : inet_ntop, inet_pton;
+import core.sys.posix.fcntl : F_GETFL, F_SETFD, F_SETFL, FD_CLOEXEC, O_NONBLOCK, fcntl;
 import core.sys.posix.netinet.in_ : AF_INET, in_addr, sockaddr_in, htons, ntohs;
 import core.sys.posix.sys.socket : SOCK_DGRAM, SO_BROADCAST, SOL_SOCKET, bind, getsockname,
     recvfrom, sendto, setsockopt, socket, sockaddr, socklen_t;
@@ -21,14 +22,51 @@ import djs.permissions : Perm, permissionCheck, permissionThrow;
 import djs.registry : CallbackSlot, registryAdd, registryLookup, registryRelease;
 import djs.runtime : Runtime, guarded, runtimeOf, runtimeReportUncaught;
 
-private enum int SOCK_NONBLOCK = 0x800;
 // Linux socket-level constants not exported by druntime's posix bindings.
 private enum int IPPROTO_IP = 0;
-private enum int IP_TTL = 2;
-private enum int IP_MULTICAST_TTL = 33;
-private enum int IP_ADD_MEMBERSHIP = 35;
-private enum int IP_DROP_MEMBERSHIP = 36;
-private enum int SOCK_CLOEXEC = 0x80000;
+version (linux)
+{
+    private enum int IP_TTL = 2;
+    private enum int IP_MULTICAST_TTL = 33;
+    private enum int IP_ADD_MEMBERSHIP = 35;
+    private enum int IP_DROP_MEMBERSHIP = 36;
+}
+else version (OSX)
+{
+    // MacOSX.sdk/usr/include/netinet/in.h
+    private enum int IP_TTL = 4;
+    private enum int IP_MULTICAST_TTL = 10;
+    private enum int IP_ADD_MEMBERSHIP = 12;
+    private enum int IP_DROP_MEMBERSHIP = 13;
+}
+else
+{
+    private enum int IP_TTL = 4;
+    private enum int IP_MULTICAST_TTL = 10;
+    private enum int IP_ADD_MEMBERSHIP = 12;
+    private enum int IP_DROP_MEMBERSHIP = 13;
+}
+// socket(AF_INET, SOCK_DGRAM, 0) with non-blocking/close-on-exec applied
+// via fcntl where the socket() flags do not exist (Darwin has neither).
+private int openUdpSocket() @nogc nothrow
+{
+    version (linux)
+    {
+        return socket(AF_INET, SOCK_DGRAM | 0x800 | 0x80000, 0); // NONBLOCK|CLOEXEC
+    }
+    else
+    {
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0)
+            return fd;
+        int fl = fcntl(fd, F_GETFL);
+        if (fl >= 0)
+            fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        return fd;
+    }
+}
+
 private enum int maxSocks = 8;
 private enum int datagramChunk = 65536;
 
@@ -119,7 +157,7 @@ private extern(C) JSValue jsCreateImpl(JSContext* ctx, JSValueConst, int argc, J
     foreach (i; 0 .. maxSocks) if (!socks[i].used) { slot = cast(int) i; break; }
     if (slot < 0) return throwInternalError(ctx, "dgram table exhausted");
     Runtime* rt = runtimeOf(ctx);
-    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    int fd = openUdpSocket();
     if (fd < 0) return throwError(ctx, makeError(ctx, "socket failed", "EIO", null, "socket"));
     uv_poll_t* p = cast(uv_poll_t*) malloc(uv_handle_size(UV_POLL));
     if (p is null || uv_poll_init_socket(rt.loop, p, fd) != 0)

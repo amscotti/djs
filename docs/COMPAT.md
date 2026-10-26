@@ -293,6 +293,24 @@ no longer treats `==` comparisons as exports, and non-identifier names are
 exposed through string export names in the ESM facade instead of
 generating invalid syntax.
 
+## macOS
+
+The runtime builds and runs natively on macOS arm64 (`--config=macos`). The
+following are the current platform differences:
+
+- **`fs.watch` is not implemented on macOS.** It throws `Error` with
+  `code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` (the same code Node uses for
+  unsupported platform features). The Linux backend is inotify; a portable
+  libuv `uv_fs_event` backend (FSEvents on macOS) is the planned parity path.
+- **`process.memoryUsage().rss` reports peak RSS** (via `getrusage`) rather
+  than current RSS; Linux reads `/proc/self/statm` for the current value.
+- **The resolver does not read `/etc/hosts`** on either platform; it queries
+  DNS directly. Node honors the hosts file.
+- **TLS trust store** is whatever the linked OpenSSL was built with (Homebrew's
+  OpenSSL 3 CA file for `--config=macos`), not the macOS Keychain.
+- **Toolchain:** macOS requires LDC 1.43 or newer (Homebrew); the Linux pins do
+  not apply. `integration.sh`/`gate.sh` remain Linux-only.
+
 ## fs
 
 - `readFile`/`readFileSync` return a `Buffer` (a `Uint8Array` subclass).

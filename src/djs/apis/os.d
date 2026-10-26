@@ -4,16 +4,58 @@ import core.stdc.stdlib : getenv, malloc, free;
 import core.stdc.string : memcpy, strlen;
 import core.sys.posix.unistd : gethostname, getuid, sysconf;
 import core.sys.posix.pwd : passwd, getpwuid_r;
-import core.sys.posix.time : clock_gettime, timespec;
+import core.sys.posix.time : timespec;
+
+import djs.platform : CLOCK_MONOTONIC, clock_gettime;
 import core.sys.posix.arpa.inet : inet_ntop;
 import core.sys.posix.netinet.in_ : AF_INET, AF_INET6, sockaddr_in, sockaddr_in6;
 import core.sys.posix.sys.socket : sockaddr;
 
-// glibc sysconf names (Linux). D's posix bindings do not expose these.
-private enum int SC_PAGESIZE = 30;
-private enum int SC_PHYS_PAGES = 85;
-private enum int SC_AVPHYS_PAGES = 86;
-private enum int SC_NPROCESSORS_ONLN = 84;
+// sysconf names are platform ABI, not portable. D's posix bindings do not
+// expose them, so the values live here per platform (Linux glibc numbering;
+// Darwin from MacOSX.sdk/usr/include/unistd.h; Darwin has no AVPHYS).
+version (linux)
+{
+    private enum int SC_PAGESIZE = 30;
+    private enum int SC_PHYS_PAGES = 85;
+    private enum int SC_AVPHYS_PAGES = 86;
+    private enum int SC_NPROCESSORS_ONLN = 84;
+}
+else version (OSX)
+{
+    private enum int SC_PAGESIZE = 29;
+    private enum int SC_NPROCESSORS_ONLN = 58;
+    private enum int SC_PHYS_PAGES = 200;
+}
+else
+{
+    private enum int SC_PAGESIZE = 29;
+    private enum int SC_NPROCESSORS_ONLN = 58;
+    private enum int SC_PHYS_PAGES = 200;
+}
+
+version (OSX)
+{
+    import core.sys.darwin.sys.sysctl : sysctlbyname;
+
+    private ulong sysctlU64(const(char)* name) @nogc nothrow
+    {
+        ulong v = 0;
+        size_t len = ulong.sizeof;
+        if (sysctlbyname(name, &v, &len, null, 0) != 0)
+            return 0;
+        return v;
+    }
+
+    private uint sysctlU32(const(char)* name) @nogc nothrow
+    {
+        uint v = 0;
+        size_t len = uint.sizeof;
+        if (sysctlbyname(name, &v, &len, null, 0) != 0)
+            return 0;
+        return v;
+    }
+}
 import core.sys.posix.sys.utsname : uname, utsname;
 
 import djs.bindings.quickjs;
@@ -65,9 +107,19 @@ private extern(C) JSValue jsOsCpus(JSContext* ctx, JSValueConst thisVal, int arg
 
 private double totalMemory() @nogc nothrow
 {
-    double pages = cast(double) sysconfLong(SC_PHYS_PAGES);
-    double size = cast(double) sysconfLong(SC_PAGESIZE);
-    return pages * size;
+    version (OSX)
+    {
+        // sysconf(_SC_PHYS_PAGES) exists on Darwin, but hw.memsize is the
+        // authoritative total (and covers the whole machine, not just what
+        // this process may allocate).
+        return cast(double) sysctlU64("hw.memsize");
+    }
+    else
+    {
+        double pages = cast(double) sysconfLong(SC_PHYS_PAGES);
+        double size = cast(double) sysconfLong(SC_PAGESIZE);
+        return pages * size;
+    }
 }
 
 private extern(C) JSValue jsOsTotalmemImpl(JSContext* ctx, JSValueConst, int,
@@ -89,8 +141,16 @@ private extern(C) JSValue jsOsFreememImpl(JSContext* ctx, JSValueConst, int,
 {
     if (!permissionCheck(Perm.sys, "systemMemoryInfo"))
         return permissionThrow(ctx, Perm.sys, "systemMemoryInfo");
-    return jsFloat(cast(double) sysconfLong(SC_AVPHYS_PAGES) *
-                   cast(double) sysconfLong(SC_PAGESIZE));
+    version (OSX)
+    {
+        double freePages = cast(double) sysctlU32("vm.page_free_count");
+        return jsFloat(freePages * cast(double) sysconfLong(SC_PAGESIZE));
+    }
+    else
+    {
+        return jsFloat(cast(double) sysconfLong(SC_AVPHYS_PAGES) *
+                       cast(double) sysconfLong(SC_PAGESIZE));
+    }
 }
 
 private extern(C) JSValue jsOsFreemem(JSContext* ctx, JSValueConst thisVal, int argc,
@@ -203,7 +263,10 @@ private extern(C) JSValue jsOsHomedir(JSContext* ctx, JSValueConst thisVal, int 
 }
 
 
-private enum int CLOCK_BOOTTIME = 7;
+version (linux)
+    private enum int CLOCK_BOOTTIME = 7;
+else
+    private enum int CLOCK_BOOTTIME = CLOCK_MONOTONIC; // Darwin: monotonic == uptime
 
 private struct ifaddrs
 {

@@ -5,10 +5,12 @@ import core.stdc.string : memcpy, strlen;
 import core.stdc.errno : EPERM, ESRCH, errno;
 import core.sys.posix.signal : SIGHUP, SIGINT, SIGQUIT, SIGKILL, SIGTERM, SIGUSR1, SIGUSR2,
     SIGPIPE, SIGALRM, SIGCHLD, SIGCONT, SIGSTOP, kill;
-import core.sys.posix.time : clock_gettime, CLOCK_MONOTONIC, timespec;
+import core.sys.posix.time : timespec;
 import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.sys.stat : umask;
-import core.sys.posix.unistd : environ, getcwd, getpid, getppid;
+import core.sys.posix.unistd : getcwd, getpid, getppid;
+
+import djs.platform : CLOCK_MONOTONIC, Mode, clock_gettime, environPtr, peakRssBytes;
 
 import djs.loop.libuv : uv_version_string;
 import djs.bindings.quickjs;
@@ -67,11 +69,12 @@ private JSValue processEnv(JSContext* ctx) @nogc nothrow
     JSValue obj = JS_NewObject(ctx);
     if (jsIsException(obj))
         return obj;
-    if (environ is null)
+    char** env = environPtr();
+    if (env is null)
         return obj;
-    for (size_t i = 0; environ[i] !is null; ++i)
+    for (size_t i = 0; env[i] !is null; ++i)
     {
-        const(char)* entry = environ[i];
+        const(char)* entry = env[i];
         size_t eq = 0;
         while (entry[eq] != 0 && entry[eq] != '=')
             eq += 1;
@@ -153,13 +156,9 @@ private long readRss() @nogc nothrow
     }
     else version (OSX)
     {
-        // Darwin reports peak RSS in bytes; Node reports current RSS, so this is
-        // an over-estimate on a long-lived process. Better than zero.
-        import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-        rusage ru;
-        if (getrusage(RUSAGE_SELF, &ru) != 0)
-            return 0;
-        return cast(long) ru.ru_maxrss;
+        // Darwin reports peak RSS in bytes; Node reports current RSS, so this
+        // is an over-estimate on a long-lived process. Better than zero.
+        return peakRssBytes();
     }
     else
     {
@@ -501,11 +500,11 @@ private extern(C) JSValue jsProcessUmaskImpl(JSContext* ctx, JSValueConst, int a
     {
         int mask = 0;
         if (!toInt32(ctx, argv[0], &mask)) return throwTypeError(ctx, "umask requires a number");
-        int old = umask(cast(uint) mask);
+        int old = umask(cast(Mode) mask);
         return jsInt(old);
     }
     int old = umask(0);
-    umask(cast(uint) old);
+    umask(cast(Mode) old);
     return jsInt(old);
 }
 extern(C) JSValue jsProcessUmask(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc

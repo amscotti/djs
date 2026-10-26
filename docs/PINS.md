@@ -6,6 +6,7 @@ One place for every pin. `scripts/bootstrap.sh` verifies the toolchain and Quick
 |---|---|---|
 | OS | Ubuntu 24.04 x86_64 | `uname -a` |
 | D compiler | LDC 1.36.0 (LLVM) | `ldc2 --version` |
+| D compiler (macOS) | LDC 1.43.0+ (Homebrew) | `ldc2 --version` |
 | Package manager | DUB 1.36.0 | `dub --version` |
 | QuickJS-NG | `v0.17.0` — commit `6d46d07d04041b40f4f49eaa7fdebe44c314c699` | `scripts/bootstrap.sh` |
 | libuv | 1.48.0 (system) | `pkg-config --modversion libuv` |
