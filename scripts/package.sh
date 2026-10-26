@@ -248,8 +248,8 @@ EOF
     sleep 0.5
     httpsOut="$(SSL_CERT_FILE=/nonexistent SSL_CERT_DIR=/nonexistent \
         "$VERIFY/$NAME/djs" -A -e "require('https').get('https://127.0.0.1:$tlsPort/', r => { console.log('https', r.statusCode); process.exit(0); }).on('error', e => { console.log('https-err', e.code); process.exit(1); })")"
-    kill "$tlsPid" 2>/dev/null
-    wait "$tlsPid" 2>/dev/null
+    kill "$tlsPid" 2>/dev/null || true
+    wait "$tlsPid" 2>/dev/null || true
     trap - EXIT
     if [ "$httpsOut" != "https 200" ]; then
         echo "package: artifact HTTPS fallback failed: $httpsOut" >&2
