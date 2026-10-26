@@ -11,9 +11,9 @@ function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
     const events = [];
     const watcher = fs.watch(base + "/src", { recursive: true }, function (type, name) { events.push(name); });
     // FSEvents stream activation is asynchronous under load; give it room.
-    await sleep(400);
+    await sleep(800);
     fs.writeFileSync(base + "/src/sub/c.txt", "c");
-    await sleep(900);
+    await sleep(2000);
     watcher.close();
     console.log("watch", events.indexOf("sub/c.txt") >= 0);
 

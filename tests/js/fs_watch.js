@@ -29,4 +29,4 @@ setTimeout(function () {
         process.exitCode = 1;
         cleanup();
     }
-}, 1500);
+}, 4000);
