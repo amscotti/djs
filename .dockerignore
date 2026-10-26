@@ -1,0 +1,12 @@
+.git
+.github
+.dub
+dist
+djs
+.DS_Store
+._*
+*.o
+*.a
+vendor/quickjs-ng
+tests/tmp
+examples/*/node_modules

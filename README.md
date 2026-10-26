@@ -68,7 +68,78 @@ model is a seat belt, not a kernel sandbox — see
 [`docs/PERMISSIONS.md`](docs/PERMISSIONS.md) and the Landlock plan in
 [`docs/PLAN.md`](docs/PLAN.md).
 
-## Quick start (Linux x86_64)
+## Install
+
+### Prebuilt macOS (Apple Silicon)
+
+The release workflow publishes a self-contained tarball for Apple Silicon. It
+bundles the Homebrew dylibs and a Mozilla CA bundle under `lib/` and `etc/`.
+Keep the extracted directory together (or install the whole directory), because
+DJS resolves those files relative to the executable.
+
+```bash
+VERSION=v0.16.4
+
+curl -LO "https://github.com/amscotti/djs/releases/download/$VERSION/djs-$VERSION-macos-arm64.tar.gz"
+curl -LO "https://github.com/amscotti/djs/releases/download/$VERSION/djs-$VERSION-macos-arm64.tar.gz.sha256"
+shasum -a 256 -c "djs-$VERSION-macos-arm64.tar.gz.sha256"
+
+tar -xzf "djs-$VERSION-macos-arm64.tar.gz"
+xattr -dr com.apple.quarantine "djs-$VERSION-macos-arm64"   # if browser-downloaded
+
+sudo mv "djs-$VERSION-macos-arm64" /opt/djs
+sudo ln -sf /opt/djs/djs /usr/local/bin/djs
+djs --version
+```
+
+Do not copy only the `djs` executable out of the directory; the bundled
+`lib/` and `etc/` paths are resolved relative to it.
+
+**Support boundary:** macOS builds are **arm64 (Apple Silicon) only**. Intel
+Macs are not supported. Artifacts are ad-hoc signed, not notarized; a
+browser-downloaded tarball may need the `xattr` command above before first run.
+
+### Docker
+
+Build the image locally. The first build downloads Ubuntu packages and clones
+the pinned QuickJS-NG revision, then leaves a runtime image with the DJS
+executable and only its shared-library dependencies:
+
+```bash
+docker build -t djs .
+
+docker run --rm djs --version
+docker run --rm djs -A -e 'console.log(process.version)'
+docker run --rm djs -A /opt/djs/examples/hello.js
+docker run --rm -it djs                  # interactive REPL
+```
+
+To run a local project, mount it at `/work`. DJS's default-deny permissions
+still apply inside the container; `-A` is convenient for experiments, or grant
+only what the script needs:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work djs -A app.js
+docker run --rm -v "$PWD:/work" -w /work \
+  djs --allow-read=/work --allow-net=example.com:443 app.js
+```
+
+The runtime image does not contain Node or npm. If a project needs
+`node_modules`, install dependencies on the host and mount the whole project
+(including its `node_modules`). The image is for experimentation, not a
+security boundary; the deny-by-default permission model still applies unless
+you pass `-A`.
+
+The Dockerfile has a separate test target that runs the integration suite
+inside the build image:
+
+```bash
+docker build --target test -t djs:test .
+```
+
+### Build from source
+
+#### Linux x86_64
 
 ```bash
 sudo apt install ldc dub libuv1-dev cmake ninja-build
@@ -83,15 +154,20 @@ Pinned toolchain: LDC 1.36, DUB 1.36, libuv 1.48, Ninja 1.11.1,
 QuickJS-NG v0.17.0 (`6d46d07d…`). `docs/PINS.md` is authoritative;
 `DJS_ALLOW_VERSION_DRIFT=1` is the only escape hatch.
 
-### macOS (Apple Silicon)
+#### macOS arm64
 
-The binary builds natively on macOS arm64; the release workflow publishes
-`djs-<version>-macos-arm64.tar.gz`.
+The binary builds natively on macOS arm64. The same self-contained release
+tarball described above is produced by `scripts/package.sh`.
 
 ```bash
-brew install ldc dub libuv openssl@3 brotli ninja cmake pkg-config
+brew install ldc dub libuv openssl@3 brotli ninja cmake pkg-config coreutils
+
+export PATH="/opt/homebrew/bin:$PATH"
+export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig"
+
 DJS_ALLOW_VERSION_DRIFT=1 ./scripts/bootstrap.sh
 dub build --build=release --compiler=ldc2 --config=macos
+dub test --config=unittest-macos
 ./djs --version
 ```
 
@@ -103,25 +179,25 @@ release tarball bundles those dylibs under `lib/` (install names rewritten to
 `@executable_path`) plus a Mozilla CA bundle under `etc/`, so running it does
 **not** require Homebrew; building from source still does.
 
-**Support boundary:** macOS builds are arm64 (Apple Silicon) only. Intel Macs
-are not supported. Release artifacts are ad-hoc signed, not notarized; a
-browser-downloaded tarball may need `xattr -d com.apple.quarantine <file>`
-before first run (or build from source). Notarization needs an Apple Developer
-account and is a distribution decision.
+The suite runs natively as well. `coreutils` supplies `timeout`:
+
+```bash
+./scripts/integration.sh
+./scripts/gate.sh
+```
+
+AddressSanitizer runs on both platforms, while LeakSanitizer is Linux-only
+(libuv's FSEvents thread and OpenSSL keep process-lifetime allocations). CI
+runs the integration suite, the permission/network gates, Express, and the Node
+differential on macOS arm64; the release job builds, bundles, and smoke-tests
+the artifact.
 
 Known differences on macOS: TLS uses the linked OpenSSL store or the bundled
 Mozilla roots, not the macOS Keychain (Node uses its own bundled Mozilla roots
 by default, also not the Keychain); use `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`
 or `SSL_CERT_DIR` for private roots. An unreadable `NODE_EXTRA_CA_CERTS` emits
-a warning and the default roots stay active, as in Node. `fs.watch` inherits FSEvents' coalescing and event-order
-quirks, as Node does.
-
-The suite runs natively as well: install `coreutils` for `timeout`, then
-`./scripts/integration.sh`. `./scripts/gate.sh` runs every gate; AddressSanitizer
-runs on both platforms, while LeakSanitizer is Linux-only (libuv's FSEvents
-thread and OpenSSL keep process-lifetime allocations). CI runs the integration
-suite, the permission/network gates, Express, and the Node differential on
-macOS arm64; the release job builds, bundles, and smoke-tests the artifact.
+a warning and the default roots stay active, as in Node. `fs.watch` inherits
+FSEvents' coalescing and event-order quirks, as Node does.
 
 ## Usage
 
