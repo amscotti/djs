@@ -8,6 +8,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 VERSION="$(sed -n 's/.*djsVersion = "\([^"]*\)".*/\1/p' src/djs/runtime.d | head -1)"
 VERSION="${VERSION:-v0.1.0}"
+case "$VERSION" in
+    v[0-9]*.[0-9]*.[0-9]*) ;;
+    *) echo "package: invalid VERSION '$VERSION'" >&2; exit 1 ;;
+esac
 
 case "$(uname -s)" in
     Linux)  OS=linux ;;
@@ -53,9 +57,13 @@ if [ "$OS" = macos ]; then
         case "$dep" in
             @rpath/*)
                 base="${dep#@rpath/}"
-                if [ -f "$STAGE/lib/$base" ]; then printf '%s' "$STAGE/lib/$base"; return 0; fi
+                # Resolve the real source first so a second library with the
+                # same basename is compared against the recorded one. Only if
+                # Homebrew has no copy do we reuse a staged source.
                 if [ -f "$BREW_PREFIX/lib/$base" ]; then printf '%s' "$BREW_PREFIX/lib/$base"; return 0; fi
-                find "$BREW_PREFIX/opt" -path "*/lib/$base" -type f 2>/dev/null | head -1
+                found="$(find -L "$BREW_PREFIX/opt" -path "*/lib/$base" -type f -print 2>/dev/null | sed -n '1p')"
+                if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+                if [ -f "$SRCMAP/$base" ]; then cat "$SRCMAP/$base"; return 0; fi
                 ;;
             "$BREW_PREFIX"/*) printf '%s' "$dep" ;;
             *) return 1 ;;
@@ -63,7 +71,7 @@ if [ "$OS" = macos ]; then
     }
 
     bundle_file() {
-        local file="$1" dep base real
+        local file="$1" dep base real realPath
         while IFS= read -r dep; do
             [ -n "$dep" ] || continue
             case "$dep" in
@@ -81,7 +89,7 @@ if [ "$OS" = macos ]; then
             # construction and skips the check.
             realPath="$(realpath "$real" 2>/dev/null || printf '%s' "$real")"
             case "$realPath" in
-                "$STAGE"/*) ;;
+                "$STAGE"/*) ;; # @rpath resolved to the staged copy
                 *)
                     if [ -f "$SRCMAP/$base" ] && [ "$(cat "$SRCMAP/$base")" != "$realPath" ]; then
                         echo "package: dylib basename collision: $base from both" \
@@ -113,15 +121,29 @@ if [ "$OS" = macos ]; then
         }
     done
 
-    if otool -L "$STAGE/djs" "$STAGE"/lib/*.dylib 2>/dev/null | grep -q "$BREW_PREFIX"; then
+    if otool -L "$STAGE/djs" "$STAGE"/lib/*.dylib 2>/dev/null | grep -qF "$BREW_PREFIX"; then
         echo "package: bundled binary still references Homebrew" >&2
+        exit 1
+    fi
+    # Every absolute dependency must be a system library.
+    badDeps="$(otool -L "$STAGE/djs" "$STAGE"/lib/*.dylib 2>/dev/null |
+        awk 'NR > 1 && $1 ~ /^\// && $1 !~ /:$/ &&
+             $1 !~ /^\/usr\/lib\// && $1 !~ /^\/System\// { print $1 }' |
+        sort -u)"
+    if [ -n "$badDeps" ]; then
+        echo "package: non-system absolute dependencies:" $badDeps >&2
+        exit 1
+    fi
+    if otool -l "$STAGE/djs" "$STAGE"/lib/*.dylib 2>/dev/null |
+        grep -A2 'LC_RPATH' | grep -qF "$BREW_PREFIX"; then
+        echo "package: bundled binary still has a Homebrew rpath" >&2
         exit 1
     fi
 
     license_copy() {
         local name="$1" dest="$2" file
         file="$(find -L "$BREW_PREFIX/opt/$name" -maxdepth 1 \
-            \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -type f 2>/dev/null | head -1)"
+            \( -iname 'LICENSE*' -o -iname 'COPYING*' \) -type f -print 2>/dev/null | sed -n '1p')"
         if [ -z "$file" ]; then
             echo "package: no license file for $name" >&2
             exit 1
@@ -131,6 +153,27 @@ if [ "$OS" = macos ]; then
     license_copy "openssl@3" "openssl-LICENSE.txt"
     license_copy "brotli" "brotli-LICENSE"
     license_copy "libuv" "libuv-LICENSE"
+    # The bundled libcrypto's OPENSSLDIR points at Homebrew. loadCaFallbacks()
+    # in tls.d reads <exe>/etc/cert.pem (and /etc/ssl/cert.pem), so ship a
+    # Mozilla roots bundle so HTTPS works on a Mac without Homebrew.
+    ca_src=""
+    for cand in "$BREW_PREFIX/etc/ca-certificates/cert.pem" \
+                "$BREW_PREFIX/etc/openssl@3/cert.pem" \
+                "/etc/ssl/cert.pem"; do
+        if [ -f "$cand" ]; then ca_src="$cand"; break; fi
+    done
+    if [ -z "$ca_src" ]; then
+        echo "package: no CA bundle found to ship" >&2
+        exit 1
+    fi
+    mkdir -p "$STAGE/etc"
+    cp -L "$ca_src" "$STAGE/etc/cert.pem"
+    chmod 644 "$STAGE/etc/cert.pem"
+    if [ -f "$BREW_PREFIX/opt/ca-certificates/LICENSE" ]; then
+        cp -p "$BREW_PREFIX/opt/ca-certificates/LICENSE" "$STAGE/licenses/ca-certificates-LICENSE"
+    else
+        printf 'Mozilla CA certificate bundle (MPL-2.0)\n' > "$STAGE/licenses/ca-certificates-LICENSE"
+    fi
     rm -rf "$SRCMAP"
 fi
 
@@ -157,9 +200,71 @@ if [ "$OS" = macos ]; then
     rm -rf "$VERIFY"
     mkdir -p "$VERIFY"
     tar -xzf "$ROOT/dist/$NAME.tar.gz" -C "$VERIFY"
-    "$VERIFY/$NAME/djs" --version >/dev/null
+    gotVersion="$("$VERIFY/$NAME/djs" --version)"
+    if [ "$gotVersion" != "$VERSION" ]; then
+        echo "package: artifact version '$gotVersion' != '$VERSION'" >&2
+        exit 1
+    fi
     "$VERIFY/$NAME/djs" -A -e 'const c=require("crypto"),z=require("zlib"); const h=c.createHash("sha256").update("x").digest("hex"); const g=z.gunzipSync(z.gzipSync(Buffer.from("ok"))).toString(); if(h!=="2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"||g!=="ok")process.exit(1)' >/dev/null
+    # Prove the executable-relative CA fallback: append a test CA to the
+    # shipped bundle, disable every default path, and connect to a local
+    # server signed by that CA.
+    tlsDir="$VERIFY/tls"
+    mkdir -p "$tlsDir"
+    cat > "$tlsDir/ca.cnf" <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = DJS Artifact Test CA
+[v3]
+basicConstraints = CA:TRUE
+EOF
+    cat > "$tlsDir/srv.cnf" <<'EOF'
+[req]
+distinguished_name = dn
+req_extensions = v3
+prompt = no
+[dn]
+CN = localhost
+[v3]
+subjectAltName = IP:127.0.0.1
+basicConstraints = CA:FALSE
+EOF
+    openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/ca.key" -out "$tlsDir/ca.pem" \
+        -days 1 -nodes -config "$tlsDir/ca.cnf" >/dev/null 2>&1
+    openssl req -new -newkey rsa:2048 -keyout "$tlsDir/srv.key" -out "$tlsDir/srv.csr" \
+        -nodes -config "$tlsDir/srv.cnf" >/dev/null 2>&1
+    openssl x509 -req -in "$tlsDir/srv.csr" -CA "$tlsDir/ca.pem" -CAkey "$tlsDir/ca.key" \
+        -CAcreateserial -out "$tlsDir/srv.pem" -days 1 \
+        -extfile "$tlsDir/srv.cnf" -extensions v3 >/dev/null 2>&1
+    cat "$tlsDir/ca.pem" >> "$VERIFY/$NAME/etc/cert.pem"
+    tlsPort=$((19443 + RANDOM % 400))
+    openssl s_server -accept "$tlsPort" -cert "$tlsDir/srv.pem" -key "$tlsDir/srv.key" \
+        -www -quiet >/dev/null 2>&1 &
+    tlsPid=$!
+    trap 'kill $tlsPid 2>/dev/null' EXIT
+    sleep 0.5
+    httpsOut="$(SSL_CERT_FILE=/nonexistent SSL_CERT_DIR=/nonexistent \
+        "$VERIFY/$NAME/djs" -A -e "require('https').get('https://127.0.0.1:$tlsPort/', r => { console.log('https', r.statusCode); process.exit(0); }).on('error', e => { console.log('https-err', e.code); process.exit(1); })")"
+    kill "$tlsPid" 2>/dev/null
+    wait "$tlsPid" 2>/dev/null
+    trap - EXIT
+    if [ "$httpsOut" != "https 200" ]; then
+        echo "package: artifact HTTPS fallback failed: $httpsOut" >&2
+        exit 1
+    fi
     rm -rf "$VERIFY"
+fi
+
+if [ "$OS" = linux ]; then
+    gotVersion="$("$STAGE/djs" --version)"
+    if [ "$gotVersion" != "$VERSION" ]; then
+        echo "package: artifact version '$gotVersion' != '$VERSION'" >&2
+        exit 1
+    fi
+    "$STAGE/djs" -A -e 'const c=require("crypto"),z=require("zlib"); if(!c.createHash("sha256").update("x").digest("hex")||z.gunzipSync(z.gzipSync(Buffer.from("ok"))).toString()!=="ok")process.exit(1)' >/dev/null
 fi
 
 echo "package: dist/$NAME.tar.gz"

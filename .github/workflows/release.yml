@@ -43,6 +43,12 @@ jobs:
       - name: Bootstrap
         run: ./scripts/bootstrap.sh
 
+      - name: Integration tests
+        run: ./scripts/integration.sh
+
+      - name: Version check
+        run: ./scripts/check-version.sh
+
       - name: Build and package
         run: ./scripts/package.sh
 
@@ -63,7 +69,7 @@ jobs:
       - name: Install toolchain
         run: |
           brew update
-          brew install ldc dub libuv openssl@3 brotli ninja cmake pkg-config
+          brew install ldc dub libuv openssl@3 brotli ninja cmake pkg-config coreutils
 
       - name: Cache the pinned QuickJS build
         uses: actions/cache@v4
@@ -78,6 +84,12 @@ jobs:
           DJS_ALLOW_VERSION_DRIFT: "1"
           PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
         run: ./scripts/bootstrap.sh
+
+      - name: Integration tests
+        run: ./scripts/integration.sh
+
+      - name: Version check
+        run: ./scripts/check-version.sh
 
       - name: Build and package
         run: ./scripts/package.sh
