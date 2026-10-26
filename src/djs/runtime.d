@@ -14,7 +14,7 @@ import djs.apis.child : installChild;
 import djs.apis.crypto : installCrypto, cryptoCloseAll;
 import djs.apis.zlib : installZlib, zlibCloseAll;
 import djs.apis.vm : installVm;
-import djs.apis.tls : installTls, tlsCloseAll, tlsFreeGlobals;
+import djs.apis.tls : installTls, tlsCloseAll, tlsFree;
 import djs.apis.dgram : installDgram, dgramCloseAll;
 import djs.apis.os : installOs;
 import djs.apis.process : installProcess;
@@ -76,6 +76,10 @@ struct Runtime
     uv_idle_t* idle;
 
     CallbackRegistry registry;
+
+    // X509_STORE* owned by this runtime (void* keeps tls.d types out of
+    // runtime.d). Built once before the loop starts.
+    void* tlsCaStore;
 
     bool prepareStarted;
     bool idleActive;
@@ -1135,6 +1139,7 @@ fail:
         JS_FreeContext(self.ctx);
     if (self.rt !is null)
         JS_FreeRuntime(self.rt);
+    tlsFree(self);
     registryDestroy(&self.registry);
     if (self.argv !is null)
     {
@@ -1203,9 +1208,11 @@ int runtimeTeardown(Runtime* self) @nogc nothrow
         loopStuck = uv_loop_alive(self.loop) != 0;
     }
 
-    // The loop drain above released every SSL_CTX that shared the CA store;
-    // drop the startup reference so nothing process-lifetime remains.
-    tlsFreeGlobals();
+    // The loop drain above released every SSL_CTX that shared the CA store.
+    // If it got stuck, a worker may still be in a handshake, so leave the
+    // store allocated and let the OS reclaim it at exit.
+    if (!loopStuck)
+        tlsFree(self);
 
     int code = self.exitCode;
     if (loopStuck && !self.exitRequested && !self.failed)

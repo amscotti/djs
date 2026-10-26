@@ -9,13 +9,13 @@ module djs.apis.tls;
 import core.stdc.errno : EINPROGRESS, EINTR, errno;
 import core.sys.posix.fcntl : F_GETFL, F_SETFL, O_NONBLOCK, fcntl;
 import core.stdc.stdlib : free, getenv, malloc;
-import core.stdc.string : memcmp, memcpy, strlen;
+import core.stdc.string : memcmp, memcpy, memmove, strlen;
 import core.sys.posix.netdb : addrinfo, freeaddrinfo, getaddrinfo;
 import core.sys.posix.arpa.inet : inet_pton;
 import core.sys.posix.poll : POLLIN, POLLOUT, poll, pollfd;
 import core.sys.posix.sys.socket : AF_INET, AF_INET6, AF_UNSPEC, SO_ERROR, SOCK_STREAM, SOL_SOCKET,
     SO_TYPE, connect, getsockopt, setsockopt, socket, sockaddr, socklen_t;
-import core.sys.posix.unistd : close;
+import core.sys.posix.unistd : close, write;
 
 import djs.bindings.quickjs;
 import djs.bindings.value;
@@ -74,6 +74,8 @@ extern(C) {
     const(char)* X509_verify_cert_error_string(long n) nothrow @nogc;
     ulong ERR_get_error() nothrow @nogc;
     void ERR_error_string_n(ulong e, char* buf, size_t len) nothrow @nogc;
+    void ERR_clear_error() nothrow @nogc;
+    int uv_exepath(char* buffer, size_t* size) nothrow @nogc;
 
     // Shared default CA store: built once at startup (default paths plus
     // NODE_EXTRA_CA_CERTS) and attached to every verifying client context,
@@ -115,45 +117,88 @@ private enum int NID_commonName = 13;
 private enum int GEN_DNS = 2;
 private enum int GEN_IPADD = 7;
 
-// Shared CA store states: 1 = ready, 2 = NODE_EXTRA_CA_CERTS failed to load,
-// 0 = not built (connections fall back to per-context default paths).
-private __gshared void* g_caStore;
-private __gshared int g_caState;
-private __gshared const(char)* g_caError;
-
-private void buildSharedCaStore() @nogc nothrow
+static if (size_t.sizeof == 8)
 {
+    // Public C ABI we mirror; fail the build if the layout drifts.
+    static assert(Asn1StringRef.sizeof == 24);
+    static assert(Asn1StringRef.data.offsetof == 8);
+    static assert(GeneralNameRef.sizeof == 16);
+    static assert(GeneralNameRef.value_.offsetof == 8);
+}
+
+// The CA store is owned by the Runtime (Runtime.tlsCaStore). It is built once
+// before the loop starts so worker threads only read it; WorkJob carries the
+// pointer across the thread boundary. A per-runtime store keeps two embedded
+// runtimes from sharing/freeing each other's trust state.
+private void warnLine(const(char)* text) @nogc nothrow
+{
+    size_t n = strlen(text);
+    if (n > 0) write(2, cast(const(void)*) text, n);
+    const(char)* nl = "\n";
+    write(2, cast(const(void)*) nl, 1);
+}
+
+private void tryLoadCa(void* st, const(char)* path) @nogc nothrow
+{
+    if (path !is null && path[0] != 0)
+        X509_STORE_load_locations(st, path, null);
+}
+
+// Fallback trust for the standalone artifact: <exe>/etc/cert.pem (bundled by
+// package.sh) and the platform bundle (/etc/ssl/cert.pem on macOS and many
+// Linux distributions). This makes HTTPS work on a Mac without Homebrew.
+private void loadCaFallbacks(void* st) @nogc nothrow
+{
+    char[4096] buf = void;
+    size_t len = buf.length;
+    if (uv_exepath(buf.ptr, &len) == 0 && len > 0 && len < buf.length)
+    {
+        buf[len] = 0;
+        size_t slash = len;
+        while (slash > 0 && buf[slash - 1] != '/') slash -= 1;
+        const(char)* suffix = "/etc/cert.pem";
+        size_t slen = strlen(suffix);
+        if (slash + slen < buf.length)
+        {
+            memcpy(buf.ptr + slash, suffix, slen);
+            buf[slash + slen] = 0;
+            tryLoadCa(st, buf.ptr);
+        }
+    }
+    tryLoadCa(st, "/etc/ssl/cert.pem");
+}
+
+private void buildCaStore(Runtime* self) @nogc nothrow
+{
+    if (self is null || self.tlsCaStore !is null)
+        return;
     void* st = X509_STORE_new();
     if (st is null)
-        return; // state stays 0: connections use per-context default paths
-    if (X509_STORE_set_default_paths(st) != 1)
-    {
-        X509_STORE_free(st);
-        return;
-    }
+        return; // connections fall back to per-context default paths
+    X509_STORE_set_default_paths(st); // may fail when no bundle is installed
+    loadCaFallbacks(st);
+    ERR_clear_error(); // duplicate fallback roots are harmless; clear the queue
     const(char)* extra = getenv("NODE_EXTRA_CA_CERTS");
     if (extra !is null && extra[0] != 0 && X509_STORE_load_locations(st, extra, null) != 1)
     {
-        X509_STORE_free(st);
-        g_caState = 2;
-        g_caError = "could not load NODE_EXTRA_CA_CERTS";
-        return;
+        // Node warns and continues with the default roots rather than
+        // disabling TLS for the whole process.
+        warnLine("djs: warning: ignoring NODE_EXTRA_CA_CERTS (load failed)");
+        ERR_clear_error();
     }
-    g_caStore = st;
-    g_caState = 1;
+    self.tlsCaStore = st;
 }
 
 // Runtime teardown, after the loop drain released every SSL_CTX that shared
-// the store: drop the startup reference. Safe to call repeatedly.
-void tlsFreeGlobals() @nogc nothrow
+// the store. The caller only invokes this when the loop did not get stuck, so
+// no worker can still hold the pointer.
+void tlsFree(Runtime* self) @nogc nothrow
 {
-    if (g_caStore !is null)
+    if (self !is null && self.tlsCaStore !is null)
     {
-        X509_STORE_free(g_caStore);
-        g_caStore = null;
+        X509_STORE_free(self.tlsCaStore);
+        self.tlsCaStore = null;
     }
-    g_caState = 0;
-    g_caError = null;
 }
 
 // Node reports the OpenSSL verify-reason name (X509_V_ERR_* minus the prefix)
@@ -207,7 +252,9 @@ private const(char)* verifyCodeString(long vr) @nogc nothrow
         case 43: return "NO_EXPLICIT_POLICY";
         case 44: return "DIFFERENT_CRL_SCOPE";
         case 45: return "UNSUPPORTED_EXTENSION_FEATURE";
-        default: return null; // unmapped: the generic ERR_TLS_HANDSHAKE is kept
+        case 62: return "HOSTNAME_MISMATCH";
+        case 79: return "INVALID_CA";
+        default: return "UNSPECIFIED"; // Node uses UNSPECIFIED for unmapped verify errors
     }
 }
 
@@ -280,6 +327,7 @@ private struct WorkJob
     int fd;
     SSL* ssl;
     SSL_CTX* ctx;
+    void* caStore;
     int err;
     char[512] msg;
     char[48] code; // error code override; empty = ERR_TLS_HANDSHAKE
@@ -313,6 +361,27 @@ private void tlsErrorMessage(WorkJob* j) @nogc nothrow
 }
 
 
+private bool isIpLiteral(const(char)* text) @nogc nothrow
+{
+    if (text is null || text[0] == 0)
+        return false;
+    char[64] buf = void;
+    size_t n = strlen(text);
+    const(char)* src = text;
+    if (n >= 2 && text[0] == '[' && text[n - 1] == ']')
+    {
+        src = text + 1;
+        n -= 2;
+    }
+    if (n == 0 || n >= buf.length)
+        return false;
+    memcpy(buf.ptr, src, n);
+    buf[n] = 0;
+    ubyte[16] ip = void;
+    return inet_pton(AF_INET, buf.ptr, ip.ptr) == 1 ||
+           inet_pton(AF_INET6, buf.ptr, ip.ptr) == 1;
+}
+
 private extern(C) int tlsVerifyContinueCb(int preverifyOk, void* x509Ctx) nothrow @nogc
 {
     // Continue through every verification error so the final result is
@@ -332,12 +401,20 @@ private bool dnsNameMatches(const(char)* host, size_t hostLen,
     if (hostLen >= h.length || cast(size_t) nameLen >= n.length)
         return false;
     for (size_t i = 0; i < hostLen; ++i)
-        h[i] = (host[i] >= 'A' && host[i] <= 'Z') ? cast(char) (host[i] + 32) : host[i];
+    {
+        char c = host[i];
+        if (c == '*') return false; // a hostname is never a wildcard
+        h[i] = (c >= 'A' && c <= 'Z') ? cast(char) (c + 32) : c;
+    }
     for (int i = 0; i < nameLen; ++i)
-        n[i] = (name[i] >= 'A' && name[i] <= 'Z') ? cast(char) (name[i] + 32) : name[i];
+    {
+        char c = name[i];
+        n[i] = (c >= 'A' && c <= 'Z') ? cast(char) (c + 32) : c;
+    }
     size_t hl = hostLen;
     int nl = nameLen;
-    // Exact match.
+    if (nl > 1 && n[nl - 1] == '.') nl -= 1; // ignore one trailing dot
+    if (hl > 1 && h[hl - 1] == '.') hl -= 1;
     if (hl == cast(size_t) nl)
     {
         bool same = true;
@@ -345,9 +422,15 @@ private bool dnsNameMatches(const(char)* host, size_t hostLen,
             if (h[i] != n[i]) { same = false; break; }
         if (same) return true;
     }
-    // Wildcard: "*." in the certificate matches exactly one leftmost label.
-    if (nl > 2 && n[0] == '*' && n[1] == '.')
+    // Wildcard: "*." matches exactly one leftmost label, and the suffix must
+    // contain at least one dot (so "*.com" can never match). Node enforces
+    // both rules in tls.checkServerIdentity.
+    if (nl > 2 && n[0] == '*' && n[1] == '.' && n[nl - 1] != '.')
     {
+        bool suffixHasDot = false;
+        for (int i = 2; i < nl; ++i)
+            if (n[i] == '.') { suffixHasDot = true; break; }
+        if (!suffixHasDot) return false;
         size_t hi = 0;
         while (hi < hl && h[hi] != '.') hi += 1;
         if (hi == hl || hi == 0) return false; // host must have another label
@@ -361,33 +444,43 @@ private bool dnsNameMatches(const(char)* host, size_t hostLen,
     return false;
 }
 
-// Node's checkServerIdentity essentials: SANs win when present (DNS names
-// case-insensitively with leftmost-label wildcards, IP addresses byte-wise);
-// without SANs the CN is used. No identity at all is a mismatch.
-private bool tlsHostMatches(const(char)* servername, SSL* ssl) @nogc nothrow
+// Node's checkServerIdentity essentials: SANs of the host's family win; DNS
+// names compare case-insensitively with leftmost-label wildcards; IPs compare
+// byte-wise. The CN is consulted only when no SAN of the host's family exists
+// (Node's behaviour for an IP-only SAN set or no SANs at all).
+private bool tlsHostMatches(const(char)* servername, const(char)* host, SSL* ssl) @nogc nothrow
 {
-    if (servername is null || servername[0] == 0)
-        return true; // nothing to check, like Node without a servername
+    const(char)* name = (servername !is null && servername[0] != 0) ? servername : host;
+    if (name is null || name[0] == 0)
+        return true;
     void* cert = SSL_get1_peer_certificate(ssl);
     if (cert is null)
         return true; // verified sessions always present one; defensive
     scope(exit) X509_free(cert);
 
-    char[256] host = void;
-    size_t hostLen = strlen(servername);
-    if (hostLen >= host.length)
+    char[256] hostBuf = void;
+    size_t hostLen = strlen(name);
+    if (hostLen >= hostBuf.length)
         return false;
-    memcpy(host.ptr, servername, hostLen);
-    if (hostLen > 0 && host[hostLen - 1] == '.')
-        hostLen -= 1; // ignore one trailing dot, like Node
-    host[hostLen] = 0;
+    memcpy(hostBuf.ptr, name, hostLen);
+    // Bracketed IPv6 literals arrive from URLs as "[::1]"; compare the
+    // address bytes, not the brackets.
+    if (hostLen >= 2 && hostBuf[0] == '[' && hostBuf[hostLen - 1] == ']')
+    {
+        memmove(hostBuf.ptr, hostBuf.ptr + 1, hostLen - 2);
+        hostLen -= 2;
+    }
+    if (hostLen > 0 && hostBuf[hostLen - 1] == '.')
+        hostLen -= 1;
+    hostBuf[hostLen] = 0;
 
     bool hostIsIp = false;
     int ipLen = 0;
     ubyte[16] ipBuf = void;
-    if (inet_pton(AF_INET, host.ptr, ipBuf.ptr) == 1) { hostIsIp = true; ipLen = 4; }
-    else if (inet_pton(AF_INET6, host.ptr, ipBuf.ptr) == 1) { hostIsIp = true; ipLen = 16; }
+    if (inet_pton(AF_INET, hostBuf.ptr, ipBuf.ptr) == 1) { hostIsIp = true; ipLen = 4; }
+    else if (inet_pton(AF_INET6, hostBuf.ptr, ipBuf.ptr) == 1) { hostIsIp = true; ipLen = 16; }
 
+    bool sawDns = false, sawIp = false;
     void* sans = X509_get_ext_d2i(cert, NID_subject_alt_name, null, null);
     if (sans !is null)
     {
@@ -398,25 +491,31 @@ private bool tlsHostMatches(const(char)* servername, SSL* ssl) @nogc nothrow
             GeneralNameRef* gn = cast(GeneralNameRef*) OPENSSL_sk_value(sans, i);
             if (gn is null || gn.value_ is null) continue;
             Asn1StringRef* str = cast(Asn1StringRef*) gn.value_;
-            if (gn.type_ == GEN_DNS && !hostIsIp)
+            if (gn.type_ == GEN_DNS)
             {
-                if (str !is null && str.data !is null &&
-                    dnsNameMatches(host.ptr, hostLen, str.data, str.length))
+                sawDns = true;
+                if (!hostIsIp && str !is null && str.data !is null &&
+                    dnsNameMatches(hostBuf.ptr, hostLen, str.data, str.length))
                     return true;
             }
-            else if (gn.type_ == GEN_IPADD && hostIsIp)
+            else if (gn.type_ == GEN_IPADD)
             {
-                if (str !is null && str.length == ipLen && str.data !is null &&
+                sawIp = true;
+                if (hostIsIp && str !is null && str.length == ipLen &&
+                    str.data !is null &&
                     memcmp(str.data, ipBuf.ptr, cast(size_t) ipLen) == 0)
                     return true;
             }
         }
-        return false; // SANs present: the CN is not consulted
     }
-    char[256] cn = void;
-    if (X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName,
-                                  cn.ptr, cast(int) cn.length) > 0)
-        return dnsNameMatches(host.ptr, hostLen, cn.ptr, cast(int) strlen(cn.ptr));
+    // No SAN of the host's family: fall back to the CN (DNS hosts only).
+    if (!hostIsIp && !sawDns)
+    {
+        char[256] cn = void;
+        if (X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName,
+                                      cn.ptr, cast(int) cn.length) > 0)
+            return dnsNameMatches(hostBuf.ptr, hostLen, cn.ptr, cast(int) strlen(cn.ptr));
+    }
     return false;
 }
 
@@ -491,18 +590,11 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
                 return;
             }
         }
-        else if (g_caState == 2)
+        else if (j.caStore !is null &&
+                 SSL_CTX_ctrl(ctx, SSL_CTRL_SET_VERIFY_CERT_STORE, 1, j.caStore) == 1)
         {
-            setMsg(j, g_caError);
-            j.err = 1;
-            return;
-        }
-        else if (g_caStore !is null &&
-                 SSL_CTX_ctrl(ctx, SSL_CTRL_SET_VERIFY_CERT_STORE, 1, g_caStore) == 1)
-        {
-            // Shared store: default paths plus NODE_EXTRA_CA_CERTS (built
-            // once at startup). SSL_CERT_FILE/SSL_CERT_DIR are honoured by
-            // OpenSSL's default-path loading either way.
+            // Per-runtime store: default paths, bundled/system fallbacks and
+            // NODE_EXTRA_CA_CERTS, built once before the loop starts.
         }
         else
             SSL_CTX_set_default_verify_paths(ctx);
@@ -559,8 +651,7 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
     // SNI is not sent for IP literals (Node does the same). Hostname
     // matching happens after the handshake, in tlsHostMatches.
     char sni0 = j.servername !is null ? j.servername[0] : 0;
-    bool servernameIsIp = (sni0 >= '0' && sni0 <= '9') || sni0 == ':';
-    if (!servernameIsIp && sni0 != 0)
+    if (sni0 != 0 && !isIpLiteral(j.servername))
         SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
                  cast(void*) j.servername);
     while (true)
@@ -592,7 +683,7 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
             j.err = 1;
             return;
         }
-        if (!tlsHostMatches(j.servername, ssl))
+        if (!tlsHostMatches(j.servername, j.host, ssl))
         {
             setMsg(j, "Hostname/IP does not match certificate's altnames");
             setCode(j, "ERR_TLS_CERT_ALTNAME_INVALID");
@@ -747,6 +838,14 @@ private extern(C) void tlsAfterWork(uv_work_t* req, int status) nothrow @nogc
     WorkJob* j = cast(WorkJob*) uv_req_get_data(cast(uv_req_t*) req);
     if (j is null) return;
     Runtime* rt = j.rt;
+    if (rt.shuttingDown || rt.failed || rt.exitRequested)
+    {
+        if (j.fd >= 0) close(j.fd);
+        if (j.ssl !is null) SSL_free(j.ssl);
+        if (j.ctx !is null) SSL_CTX_free(j.ctx);
+        freeJob(j);
+        return;
+    }
     if (j.err != 0 || j.ssl is null)
     {
         if (j.fd >= 0) close(j.fd);
@@ -890,6 +989,7 @@ private extern(C) JSValue jsTlsConnectImpl(JSContext* ctx, JSValueConst, int arg
     }
     j.caFile = caOpt; j.certFile = certOpt; j.keyFile = keyOpt; j.alpn = alpnOpt;
     j.rt = rt;
+    j.caStore = rt.tlsCaStore;
     j.port = port;
     j.verify = JS_ToBool(ctx, argv[3]) > 0;
     j.fd = -1;
@@ -1222,8 +1322,8 @@ extern(C) JSValue jsAcceptFd(JSContext* ctx, JSValueConst thisVal, int argc, JSV
 
 bool installTls(Runtime* self, JSValueConst djs) @nogc nothrow
 {
-    // Before the loop starts (single-threaded): build the shared CA store.
-    buildSharedCaStore();
+    // Before the loop starts (single-threaded): build this runtime's CA store.
+    buildCaStore(self);
     JSContext* ctx = self.ctx;
     JSValue obj = JS_NewObject(ctx);
     if (jsIsException(obj)) return false;
