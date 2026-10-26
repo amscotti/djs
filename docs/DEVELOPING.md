@@ -73,7 +73,7 @@ docs/                 architecture, plan, guide, reviews, compat, bench, roadmap
 ./scripts/bootstrap.sh        # pins, engine build, ABI probe, qjs smoke
 dub test                      # D unittests + zero-GC allocation counter
 ./scripts/integration.sh      # golden suite + CLI checks
-./scripts/gate.sh             # everything, evidence to gates/
+./scripts/gate.sh             # everything (per-step logs in .dub/)
 ```
 
 Each review round has three independent reviewers (general, adversarial,

@@ -4,7 +4,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 . "$ROOT/scripts/lib-portable.sh"
-mkdir -p gates .dub
+mkdir -p .dub
 BIN="$ROOT/.dub/asan/djs-asan"
 log="$ROOT/.dub/sanitize-build.log"
 # Sanitizer flags live here rather than in dub.json: DUB warns about compiler
@@ -82,6 +82,4 @@ if [ "$errors" -ne 0 ]; then
     echo "gate-sanitize: $errors fixture(s) failed" >&2
     exit 1
 fi
-printf 'gate-sanitize ok %s cases=%d sanitizer=%s\n' \
-    "$(date -u +%FT%TZ)" "$ran" "$DETECT_LABEL" >> gates/sanitize.txt
 echo "gate-sanitize: ok ($ran cases)"

@@ -47,7 +47,7 @@ One runtime thread owns one libuv loop and one QuickJS `JSRuntime`/`JSContext`. 
 4. **No phase references in code:** source, tests, comments, and identifiers never mention plan phases or task IDs. `scripts/check-no-phase-refs.sh` enforces this and runs in the gate.
 5. **Tests are the oracle:** every behavior has a test; where behavior overlaps Node, a differential test compares observable output and intentional differences are documented in `docs/COMPAT.md`.
 6. **Pins are law:** LDC, DUB, QuickJS-NG commit, libuv version, and flags live in `docs/PINS.md`; `scripts/bootstrap.sh` verifies them.
-7. **Gates produce evidence:** every gate script appends a machine-readable line to `gates/`, which is committed. A gate that leaves no artifact did not run.
+7. **Gates fail the build:** every gate script exits non-zero on failure and writes its detail to `.dub/` (ignored). CI job logs are the durable record; generated gate output is not committed.
 
 ### Deliverables
 
@@ -139,7 +139,7 @@ IDs are the merged findings from `docs/reviews/round-1-*.md`; the finding-to-ID 
 |---|---|---|
 | R1-01 | Unittest config gets its own `targetName`/`targetPath` | `dub test && ./djs -e 'console.log(1)'` prints `1` |
 | R1-02 | Teardown: close handles, bounded `UV_RUN_NOWAIT` drain, never block; `UV_EBUSY` leaks rather than frees; honor requested exit code | FIFO read + `process.exit(3)` exits 3 within 1 s |
-| R1-03 | Add `scripts/gate-sanitize.sh`, `scripts/gate-alloc.sh`, `scripts/gate.sh`; commit `gates/` evidence | `./scripts/gate.sh` exit 0, `gates/*.txt` present |
+| R1-03 | Add `scripts/gate-sanitize.sh`, `scripts/gate-alloc.sh`, `scripts/gate.sh` | `./scripts/gate.sh` exit 0 |
 | R1-04 | `registryDestroy` in teardown | LSan clean; 100 create/teardown cycles flat |
 | R1-05 | Stop draining jobs once exit is requested; never overwrite an explicit code | `Promise.reject(...); process.exit(3)` → exit 3 |
 | R1-06 | Gate `onTimer`/`onIdle`/`onPrepare`/fs completion on `failed \|\| exitRequested` | first throw stops all same-batch timers |

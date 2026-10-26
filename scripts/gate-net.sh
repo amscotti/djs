@@ -38,5 +38,4 @@ fi
 # assertion is independent of the resolver's verbatim ordering.
 ./djs -A --allow-net="127.0.0.1:$PORT" -e 'require("dns").lookup("localhost",{family:4},(e,a,f)=>{ if(e||!a) process.exit(1); console.log("dns",a,f); })' >"$TMP/dns" 2>&1 || exit 1
 grep -q "^dns 127.0.0.1 4$" "$TMP/dns" || { cat "$TMP/dns" >&2; exit 1; }
-printf 'net-gate ok %s\n' "$(date -u +%FT%TZ)" >> gates/net.txt
 echo "net-gate: ok"

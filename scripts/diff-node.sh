@@ -31,5 +31,4 @@ if [ "$fail" -ne 0 ]; then
     echo "diff-node: $fail case(s) differ" >&2
     exit 1
 fi
-printf 'diff-node ok %s cases=%d\n' "$(date -u +%FT%TZ)" "${#cases[@]}" >> gates/diff.txt
 echo "diff-node: ok (${#cases[@]} cases)"

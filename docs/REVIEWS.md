@@ -96,7 +96,7 @@ Source reports: `docs/reviews/round-1-general.md` (RG-xx), `docs/reviews/round-1
 |---|---|---|---|
 | R1-01 | RG-01, RP-08 | `dub test` overwrites `./djs` with the unittest binary | **fixed** — unittest configuration has its own `targetName`/`targetPath` |
 | R1-02 | RP-01, RA-04 | Teardown blocks on in-flight fs work; `UV_EBUSY` frees the loop | **fixed** — bounded `UV_RUN_NOWAIT` drain; leak-and-honor-code on EBUSY |
-| R1-03 | RG-08, RP-02 | Phase 1's ASan/leak/GC gates do not exist; `gates/` empty | **fixed** — `gate.sh`, `gate-sanitize.sh`, `gate-alloc.sh`, committed evidence |
+| R1-03 | RG-08, RP-02 | Phase 1's ASan/leak/GC gates do not exist; `gates/` empty | **fixed** — `gate.sh`, `gate-sanitize.sh`, `gate-alloc.sh` (evidence now lives in CI logs, not the tree) |
 | R1-04 | RG-02, RA-05, RP-03 | Registry slot table leaked every run | **fixed** — `registryDestroy` in teardown |
 | R1-05 | RG-06, RA-02 | `process.exit(code)` clobbered by later jobs/rejections | **fixed** — drain stops on exit request; explicit code preserved |
 | R1-06 | RA-06 | Same-batch callbacks run after a fatal error | **fixed** — completion entry points check `failed \|\| exitRequested` |

@@ -75,7 +75,7 @@ sudo apt install ldc dub libuv1-dev cmake ninja-build
 dub build --build=release
 dub test
 ./scripts/integration.sh        # golden-output suite + CLI checks
-./scripts/gate.sh               # every gate, evidence in gates/
+./scripts/gate.sh               # every gate (logs in .dub/)
 ```
 
 Pinned toolchain: LDC 1.36, DUB 1.36, libuv 1.48, Ninja 1.11.1,
@@ -219,9 +219,10 @@ dub test                 # D unittests (includes the zero-GC-allocation counter)
 ./scripts/gate.sh        # also Node differential, soak, and the ABI/no-phase gates
 ```
 
-`gate.sh` writes machine-readable evidence to `gates/` (committed). The
-sanitizer pass builds `.dub/asan/djs-asan` with `-fsanitize=address` and fails
-on any `AddressSanitizer`/`LeakSanitizer` report across the fixture set.
+`gate.sh` keeps per-step logs under `.dub/`; CI job logs are the durable
+record, and no generated evidence is committed. The sanitizer pass builds
+`.dub/asan/djs-asan` with `-fsanitize=address` and fails on any
+`AddressSanitizer`/`LeakSanitizer` report across the fixture set.
 `integration.sh` also checks SIGPIPE, REPL async ordering, `process.exit` with a
 blocked fs read, and that `dub test` does not replace the runtime binary.
 

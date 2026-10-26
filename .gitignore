@@ -17,3 +17,4 @@ examples/progress-app/node_modules/
 examples/hono-progress-app/node_modules/
 examples/deepseek-chat/node_modules/
 tests/compat/node_modules
+gates/

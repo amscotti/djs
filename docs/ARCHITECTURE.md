@@ -407,7 +407,7 @@ djs/
   dub.json
   scripts/bootstrap.sh        # toolchain check + pinned QuickJS-NG build
   scripts/integration.sh      # JS suite + golden files
-  scripts/gate.sh             # every gate; evidence in gates/
+  scripts/gate.sh             # every gate; per-step logs in .dub/
   scripts/gate-sanitize.sh    # ASan/LSan fixture pass
   scripts/gate-alloc.sh       # unittest suite incl. GC counter
   scripts/check-abi.sh        # C probe against the pinned header
@@ -444,7 +444,6 @@ djs/
   tests/ut_main.d             # empty main; druntime runs every unittest block
   tests/js/                   # integration scripts (flat or <name>/main.*)
   tests/golden/               # expected stdout/stderr/exit codes
-  gates/                      # committed gate evidence
   vendor/quickjs-ng/          # fetched by bootstrap, pinned
 ```
 
@@ -475,7 +474,7 @@ The D side asserts the same size/alignment, but only this C probe sees the engin
 - **Differential checks**: `scripts/diff-node.sh` runs a case list under both `node` and `djs`, normalizes temporary paths, and compares stdout plus exit status (the case list lives in the script; it is
   skipped cleanly when Node is absent). `docs/COMPAT.md` records every intentional difference; the golden suite remains the behavioural contract.
 - **Leak checks**: `process.memoryUsage()` exposes QuickJS heap + RSS; `scripts/gate-sanitize.sh` builds with `-fsanitize=address`, verifies every listed case runs, and fails on an exit-status mismatch or any ASan/LSan report. Linux runs ASan + LSan; macOS runs ASan only, because libuv's FSEvents thread and OpenSSL keep process-lifetime allocations LSan would report. `JS_DUMP_LEAKS` and Valgrind runs are **deferred**. The D unittest suite adds a 1,000-cycle timer churn assertion that the D GC allocation counter does not move.
-- **Gate evidence**: `scripts/gate.sh` runs the ABI probe, the no-phase-refs check, build, the unittest suite (including the zero-GC-allocation counter), the integration suite, the ASan/LSan pass, the loopback networking gate, the Node differential and the soak test, and appends a line per step to `gates/`. A gate that leaves no artifact did not run.
+- **Gate results**: `scripts/gate.sh` runs the ABI probe, the no-phase-refs check, build, the unittest suite (including the zero-GC-allocation counter), the integration suite, the ASan/LSan pass, the loopback networking gate, the Node differential and the soak test, and exits non-zero if any step fails. Per-step output is kept in `.dub/gate-*.log`; CI job logs are the durable record. Generated gate output is not committed — the repository stays source-only.
 
 ## 14. Risks
 

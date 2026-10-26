@@ -15,6 +15,4 @@ if [ "$delta" -gt "$CAP_KB" ]; then
     echo "soak: heap grew ${delta} KiB (cap ${CAP_KB} KiB)" >&2
     exit 1
 fi
-mkdir -p gates
-printf 'soak ok %s heap_delta_kb=%s cap_kb=%s\n' "$(date -u +%FT%TZ)" "$delta" "$CAP_KB" >> gates/soak.txt
 echo "soak: ok (heap delta ${delta} KiB <= ${CAP_KB} KiB)"
