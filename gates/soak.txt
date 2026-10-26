@@ -229,3 +229,7 @@ soak ok 2026-10-26T01:57:40Z heap_delta_kb=-1 cap_kb=8192
 soak ok 2026-10-26T01:57:40Z
 soak ok 2026-10-26T01:59:52Z heap_delta_kb=-1 cap_kb=8192
 soak ok 2026-10-26T01:59:52Z
+soak ok 2026-10-26T02:49:02Z heap_delta_kb=-1 cap_kb=8192
+soak ok 2026-10-26T02:49:02Z
+soak ok 2026-10-26T02:48:52Z heap_delta_kb=-1 cap_kb=8192
+soak ok 2026-10-26T02:48:52Z
