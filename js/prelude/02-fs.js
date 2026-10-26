@@ -438,6 +438,7 @@
         this._listener = listener || null;
         this._id = 0;
         this._closed = false;
+        this._ref = true;
     }
     FSWatcher.prototype = Object.create(EventEmitter.prototype);
     FSWatcher.prototype.constructor = FSWatcher;
@@ -447,6 +448,16 @@
         if (this._id) { __djs.fs.watchClose(this._id); this._id = 0; }
         this.emit('close');
     };
+    FSWatcher.prototype.ref = function () {
+        this._ref = true;
+        if (!this._closed && this._id) __djs.fs.watchSetRef(this._id, true);
+        return this;
+    };
+    FSWatcher.prototype.unref = function () {
+        this._ref = false;
+        if (!this._closed && this._id) __djs.fs.watchSetRef(this._id, false);
+        return this;
+    };
     function RecursiveWatcher(root, listener) {
         EventEmitter.call(this);
         this._root = String(root);
@@ -454,6 +465,7 @@
         this._closed = false;
         this._watched = Object.create(null);
         this._ids = [];
+        this._ref = true;
         this._addDir(this._root);
     }
     RecursiveWatcher.prototype = Object.create(EventEmitter.prototype);
@@ -476,6 +488,7 @@
             }
         });
         this._ids.push(id);
+        if (!this._ref) __djs.fs.watchSetRef(id, false);
         var names;
         try { names = readdirSync(dir); } catch (e) { return; }
         for (var i = 0; i < names.length; i++) {
@@ -493,17 +506,33 @@
         this._ids = [];
         this.emit('close');
     };
+    RecursiveWatcher.prototype.ref = function () {
+        this._ref = true;
+        if (!this._closed) for (var i = 0; i < this._ids.length; i++) __djs.fs.watchSetRef(this._ids[i], true);
+        return this;
+    };
+    RecursiveWatcher.prototype.unref = function () {
+        this._ref = false;
+        if (!this._closed) for (var i = 0; i < this._ids.length; i++) __djs.fs.watchSetRef(this._ids[i], false);
+        return this;
+    };
 
     function watch(path, options, listener) {
         if (typeof options === 'function') { listener = options; options = {}; }
         if (typeof listener !== 'function') throw new TypeError('listener must be a function');
-        if (options && options.recursive) return new RecursiveWatcher(String(path), listener);
+        var recursive = !!(options && options.recursive);
+        // macOS FSEvents supports recursive watching natively; one handle
+        // covers the whole tree. Linux/inotify has no recursive primitive, so
+        // the prelude walks the tree and adds a watcher per directory.
+        if (recursive && __djs.process.platform() !== 'darwin')
+            return new RecursiveWatcher(String(path), listener);
         var self = new FSWatcher(listener);
         self._id = __djs.fs.watchStart(String(path), function (type, filename) {
             if (self._closed) return;
             self.emit('change', type, filename);
             if (self._listener) self._listener(type, filename);
-        });
+        }, recursive);
+        if (!self._ref) __djs.fs.watchSetRef(self._id, false);
         return self;
     }
 

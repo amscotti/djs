@@ -8,7 +8,7 @@ import core.sys.posix.unistd : usleep, write;
 
 import djs.apis.bytes : installBytes;
 import djs.apis.console : installConsole;
-import djs.apis.fs : installFs;
+import djs.apis.fs : fsCloseAll, installFs;
 import djs.apis.net : installNet, netCloseAll;
 import djs.apis.child : installChild;
 import djs.apis.crypto : installCrypto, cryptoCloseAll;
@@ -1165,6 +1165,7 @@ int runtimeTeardown(Runtime* self) @nogc nothrow
     if (self.ctx !is null)
     {
         timersCloseAll(self);
+        fsCloseAll(self);
         netCloseAll(self);
         signalsCloseAll(self);
         stdioCloseAll(self);

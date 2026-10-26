@@ -2479,24 +2479,55 @@ extern(C) JSValue jsOpenStart(JSContext* ctx, JSValueConst thisVal, int argc,
 
 // ---- fs.watch (libuv fs events) -------------------------------------------
 //
-// One uv_fs_event handle per watcher: libuv uses inotify on Linux and
+// One uv_fs_event handle per native watcher: libuv uses inotify on Linux and
 // FSEvents (directories) or kqueue (files) on macOS. The JavaScript contract
 // is unchanged: the listener receives (eventType, filename) where eventType
 // is "change" for content changes and "rename" for create/delete/move.
 // libuv may report both in one event; rename wins, matching Node.
+//
+// Watchers live in a dynamic doubly linked list, not a fixed table: recursive
+// watching creates one watcher per directory on Linux, and applications can
+// legitimately watch more than the old 32-handle cap. A slot is unlinked as
+// soon as close() is called, but stays allocated until libuv runs its close
+// callback (the handle's data points at it).
 
 private struct WatchSlot
 {
-    bool used;
     bool closing;
     int id;
     uv_fs_event_t* ev;
     Runtime* rt;
     ulong cb;
+    WatchSlot* prev;
+    WatchSlot* next;
 }
 
-private __gshared WatchSlot[32] watches;
+private __gshared WatchSlot* watchHead;
 private __gshared int nextWatchId = 1;
+
+private void watchLink(WatchSlot* w) @nogc nothrow
+{
+    w.prev = null;
+    w.next = watchHead;
+    if (watchHead !is null) watchHead.prev = w;
+    watchHead = w;
+}
+
+private void watchUnlink(WatchSlot* w) @nogc nothrow
+{
+    if (w.prev !is null) w.prev.next = w.next;
+    else watchHead = w.next;
+    if (w.next !is null) w.next.prev = w.prev;
+    w.prev = null;
+    w.next = null;
+}
+
+private WatchSlot* watchFind(int id) @nogc nothrow
+{
+    for (WatchSlot* w = watchHead; w !is null; w = w.next)
+        if (w.id == id) return w;
+    return null;
+}
 
 private bool watchCall(Runtime* rt, ulong cb, int argc, JSValueConst* argv) @nogc nothrow
 {
@@ -2518,20 +2549,15 @@ private bool watchCall(Runtime* rt, ulong cb, int argc, JSValueConst* argv) @nog
 private extern(C) void watchHandleClosed(uv_handle_t* h) nothrow @nogc
 {
     WatchSlot* w = cast(WatchSlot*) uv_handle_get_data(h);
-    if (w !is null)
-    {
-        w.ev = null;
-        w.used = false;
-        w.closing = false;
-    }
     free(h);
+    free(w);
 }
 
 private extern(C) void watchEventCb(uv_fs_event_t* h, const(char)* filename,
                                     int events, int status) nothrow @nogc
 {
     WatchSlot* w = cast(WatchSlot*) uv_handle_get_data(cast(uv_handle_t*) h);
-    if (w is null || !w.used || w.closing || status < 0)
+    if (w is null || w.closing || status < 0)
         return;
     JSValue[2] argv = void;
     const(char)* ev = (events & UV_RENAME) != 0 ? "rename" : "change";
@@ -2554,37 +2580,48 @@ private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int arg
     if (!permissionCheck(Perm.read, path)) return permissionThrow(ctx, Perm.read, path);
     Runtime* rt = runtimeOf(ctx);
     if (rt is null) return throwInternalError(ctx, "no runtime");
-    int slot = -1;
-    foreach (i; 0 .. watches.length) if (!watches[i].used) { slot = cast(int) i; break; }
-    if (slot < 0) return throwInternalError(ctx, "watch table exhausted");
 
+    bool recursive = argc >= 3 && JS_ToBool(ctx, argv[2]) > 0;
+    int watchFlags = 0;
+    version (OSX)
+        if (recursive) watchFlags = UV_FS_EVENT_RECURSIVE;
+
+    WatchSlot* w = cast(WatchSlot*) calloc(1, WatchSlot.sizeof);
+    if (w is null) return throwInternalError(ctx, "out of memory");
     uv_fs_event_t* ev = cast(uv_fs_event_t*) malloc(uv_handle_size(UV_FS_EVENT));
-    if (ev is null) return throwInternalError(ctx, "out of memory");
+    if (ev is null)
+    {
+        free(w);
+        return throwInternalError(ctx, "out of memory");
+    }
     int rc = uv_fs_event_init(rt.loop, ev);
     if (rc != 0)
     {
         free(ev);
+        free(w);
         return throwInternalError(ctx, "watch init failed");
     }
-    WatchSlot* w = &watches[slot];
-    *w = WatchSlot.init;
-    w.used = true;
     w.id = nextWatchId++;
     if (nextWatchId == 0) nextWatchId = 1;
     w.ev = ev;
     w.rt = rt;
     uv_handle_set_data(cast(uv_handle_t*) ev, w);
+    watchLink(w);
     ulong cb = registryAdd(ctx, &rt.registry, argv[1], null);
     if (cb == 0)
     {
         // The handle is initialized, so close it instead of free()ing it.
+        watchUnlink(w);
+        w.closing = true;
         uv_close(cast(uv_handle_t*) ev, &watchHandleClosed);
         return throwInternalError(ctx, "callback registry exhausted");
     }
     w.cb = cb;
-    rc = uv_fs_event_start(ev, &watchEventCb, path, 0);
+    rc = uv_fs_event_start(ev, &watchEventCb, path, watchFlags);
     if (rc != 0)
     {
+        watchUnlink(w);
+        w.closing = true;
         registryRelease(ctx, &rt.registry, cb);
         w.cb = 0;
         uv_close(cast(uv_handle_t*) ev, &watchHandleClosed);
@@ -2604,29 +2641,67 @@ private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int arg
 {
     int id = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &id)) return throwTypeError(ctx, "watchClose requires an id");
-    foreach (ref w; watches)
+    WatchSlot* w = watchFind(id);
+    if (w is null) return throwTypeError(ctx, "invalid watcher");
+    // close() is idempotent. The slot is unlinked immediately so a second
+    // call cannot find it and uv_close the same handle twice.
+    watchUnlink(w);
+    w.closing = true;
+    if (w.cb != 0) { registryRelease(ctx, &w.rt.registry, w.cb); w.cb = 0; }
+    if (w.ev !is null)
     {
-        if (!w.used || w.id != id) continue;
-        // close() is idempotent: a second call (or one from inside the event
-        // callback) must not uv_close the same handle twice.
-        if (w.closing) return jsUndefined();
-        w.closing = true;
-        if (w.cb != 0) { registryRelease(ctx, &w.rt.registry, w.cb); w.cb = 0; }
-        if (w.ev !is null)
-        {
-            // Safe from inside the event callback: libuv stops delivery and
-            // frees the handle through the close callback.
-            uv_fs_event_stop(w.ev);
-            uv_close(cast(uv_handle_t*) w.ev, &watchHandleClosed);
-        }
-        else
-            w.used = false;
-        return jsUndefined();
+        // Safe from inside the event callback: libuv stops delivery and
+        // frees the handle through the close callback.
+        uv_fs_event_stop(w.ev);
+        uv_close(cast(uv_handle_t*) w.ev, &watchHandleClosed);
     }
-    return throwTypeError(ctx, "invalid watcher");
+    else
+        free(w);
+    return jsUndefined();
 }
 extern(C) JSValue jsWatchClose(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
 { return guarded!jsWatchCloseImpl(ctx, thisVal, argc, argv); }
+
+private extern(C) JSValue jsWatchSetRefImpl(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) nothrow @nogc
+{
+    int id = 0;
+    if (argc < 1 || !toInt32(ctx, argv[0], &id)) return throwTypeError(ctx, "watchSetRef requires an id");
+    bool on = argc >= 2 && JS_ToBool(ctx, argv[1]) > 0;
+    WatchSlot* w = watchFind(id);
+    if (w !is null && w.ev !is null)
+    {
+        if (on) uv_ref(cast(uv_handle_t*) w.ev);
+        else uv_unref(cast(uv_handle_t*) w.ev);
+    }
+    return jsUndefined();
+}
+extern(C) JSValue jsWatchSetRef(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
+{ return guarded!jsWatchSetRefImpl(ctx, thisVal, argc, argv); }
+
+// Close every watcher owned by this runtime. Teardown drains the loop, which
+// runs the close callbacks and frees the slots.
+void fsCloseAll(Runtime* self) @nogc nothrow
+{
+    WatchSlot* w = watchHead;
+    while (w !is null)
+    {
+        WatchSlot* next = w.next;
+        if (w.rt is self)
+        {
+            watchUnlink(w);
+            w.closing = true;
+            if (w.cb != 0) { registryRelease(self.ctx, &self.registry, w.cb); w.cb = 0; }
+            if (w.ev !is null)
+            {
+                uv_fs_event_stop(w.ev);
+                uv_close(cast(uv_handle_t*) w.ev, &watchHandleClosed);
+            }
+            else
+                free(w);
+        }
+        w = next;
+    }
+}
 
 bool installFs(Runtime* self, JSValueConst djs) @nogc nothrow
 {
@@ -2645,6 +2720,7 @@ bool installFs(Runtime* self, JSValueConst djs) @nogc nothrow
         && addNativeFunction(ctx, obj, "rmSync", &jsRmSync, 3)
         && addNativeFunction(ctx, obj, "watchStart", &jsWatchStart, 2)
         && addNativeFunction(ctx, obj, "watchClose", &jsWatchClose, 1)
+        && addNativeFunction(ctx, obj, "watchSetRef", &jsWatchSetRef, 2)
         && addNativeFunction(ctx, obj, "readdirTypesSync", &jsReaddirTypesSync, 1)
         && addNativeFunction(ctx, obj, "realpathSync", &jsRealpathSync, 1)
         && addNativeFunction(ctx, obj, "readFileStart", &jsReadFileStart, 3)
