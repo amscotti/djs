@@ -147,39 +147,35 @@ watcher/slot-exhaustion/non-recursive/recursive-new-subdir coverage.
 1. **`child_process` environment on macOS** — `execvpe` replacement must
    preserve `envp` (`spawn(..., {env})`). `LD_*/DYLD_*` filtering (added in
    v0.16.4) must also apply on the Darwin path.
-2. **`process.memoryUsage().rss`** — currently stubbed to 0 in the probe;
-   the existing Darwin branch intends `getrusage` (peak RSS) but druntime
-   lacks `ru_maxrss`. Choose: local `rusage` mirror (peak, documented — the
-   README already says "peak") or `mach_task_basic_info` (current RSS,
-   Node-parity). Small either way.
-3. **`os.uptime()`** — replace the Linux `CLOCK_BOOTTIME` constant with a
-   Darwin path (`sysctl kern.boottime`); probe returned 0.
+2. **`process.memoryUsage().rss`** — fixed in the follow-up by binding
+   `uv_resident_set_memory`, the same call Node uses. It reports current RSS
+   on both platforms; the earlier `getrusage` peak-RSS branch was removed.
+3. **`os.uptime()`** — fixed using `CLOCK_MONOTONIC` on Darwin (the value
+   matches Node exactly); `CLOCK_BOOTTIME` is Linux-only.
 4. **dgram** — fix `openSocket` (§4 #9); after the fix the loopback
    send/receive smoke must pass.
-5. **TLS trust store** — the probe's `verify ERR_TLS_HANDSHAKE` matched
-   Linux, but that is self-signed rejection. There is no hardcoded CA path
-   in the source (`SSL_CTX_set_default_verify_paths` uses whatever the
-   linked OpenSSL baked in — Homebrew's `openssl@3/cert.pem`). Against the
-   public web this may be an empty or non-system store; Node bundles its own
-   CA file. Decide: bundle a CA file (Node-style), document the OpenSSL
-   default, or integrate the macOS Keychain (Security.framework).
-6. **`os.cpus()`/`totalmem()`/`freemem()`** — silently wrong on macOS
-   (measured 1 CPU / 0 bytes) because of hardcoded glibc `sysconf` numbers;
-   needs the Darwin constants plus `sysctl`/mach for free memory and total
-   size (§4 #11). This is the kind of bug that only shows up in real
-   `os`-consuming CLIs.
+5. **TLS trust store** — public HTTPS works: Homebrew's OpenSSL links
+   `ssl/cert.pem` to `ca-certificates`, verified with `fetch("https://example.com")`.
+   The follow-up added `NODE_EXTRA_CA_CERTS` (additive) and verified
+   `SSL_CERT_FILE`; `SSL_CERT_DIR` is OpenSSL's default-path mechanism.
+   Keychain integration was not pursued because Node does not use the
+   Keychain by default either (it bundles Mozilla roots).
+6. **`os.cpus()`/`totalmem()`/`freemem()`** — fixed with Darwin `sysconf`
+   numbers plus `sysctl hw.memsize`/`vm.page_free_count`. `os.cpus()` now
+   comes from `uv_cpu_info`, so model/speed/times match Node on both
+   platforms (it previously had placeholder entries).
 7. **`dgram` IP options** — Linux option numbers hit different Darwin
    options (`IP_TTL=2` is `IP_HDRINCL`); TTL/multicast/broadcast
    configuration fails with `ENOPROTOOPT` (§4 #10).
-8. **DNS resolver does not read `/etc/hosts`** — djs's hand-rolled resolver
-   queries DNS servers directly (`prelude/04-platform.js`), whereas Node
-   (c-ares) honours the hosts file. `localhost` resolving to `127.0.0.1`
-   therefore works by accident on Linux CI and not on macOS
-   (`tests/js/dns_resolve.js` fails). Reading `/etc/hosts` (both platforms)
-   is the parity fix.
-9. **`os.tmpdir()` returns `TMPDIR` verbatim** including a trailing slash,
-   unlike Node (minor). Platform-string tests aside, no golden
-   currently prints it.
+8. **DNS resolver and `/etc/hosts`** — this finding was incorrect for
+   `dns.lookup`/`net.connect`: both use `uv_getaddrinfo`, which honors the
+   host's resolver (including `/etc/hosts`). Verified with an actual hosts
+   entry (`kubernetes.docker.internal` → `127.0.0.1`) on DJS and Node.
+   `dns.resolve*` queries DNS directly and bypasses hosts, exactly as Node
+   does. No code change was needed.
+9. **`os.tmpdir()` returns `TMPDIR` verbatim** including a trailing slash.
+   Fixed: trailing separators are stripped (except root), matching Node;
+   covered by `tests/js/os_tmpdir.js`.
 
 ## 7. Test suite + gates portability
 
@@ -332,10 +328,20 @@ Validation evidence (both platforms, same commit):
   `os.freemem()` follows libuv's `free_count * pagesize`; `fdatasyncSync`
   works; `os.cpus()` reports all 10 cores.
 
-Remaining differences (documented in `docs/COMPAT.md`): `rss` is peak rather
-than current, the resolver does not read `/etc/hosts` on either platform, TLS
-trust is the linked OpenSSL's CA store (not the Keychain), the release tarball
-needs the Homebrew formulae at runtime, and ASan is not wired up for Darwin.
+Follow-up parity pass (post-T4) closed the remaining application-visible
+items: `rss` is now current via `uv_resident_set_memory`; watcher slots are
+dynamic and macOS uses native recursive FSEvents; `NODE_EXTRA_CA_CERTS`,
+`SSL_CERT_FILE` and `SSL_CERT_DIR` are honored; `os.cpus()` carries
+model/speed/times from `uv_cpu_info`; and the release artifact bundles the
+Homebrew dylibs with `@executable_path` install names. The macOS ASan gate now
+runs (AddressSanitizer; LSan leak detection stays Linux-only because libuv's
+FSEvents thread and OpenSSL keep process-lifetime allocations).
+
+Remaining differences: TLS uses OpenSSL's CA bundle rather than Node's bundled
+Mozilla roots (not the Keychain in either case); FSEvents event coalescing and
+ordering are OS-defined; macOS support is arm64-only. `os.tmpdir()` now strips
+trailing separators like Node, and `/etc/hosts` was confirmed to work through
+`uv_getaddrinfo`.
 
 
 | Constant | Darwin value | Source |

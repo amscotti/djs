@@ -299,21 +299,30 @@ The runtime builds and runs natively on macOS arm64 (`--config=macos`). The
 following are the current platform differences:
 
 - **`fs.watch` uses libuv fs events** (`uv_fs_event`): inotify on Linux,
-  FSEvents for directories and kqueue for files on macOS. On macOS, FSEvents
-  coalesces and may report a write as `rename` before later reporting
-  `change` (Node inherits the same behaviour); FSEvents also replays recent
-  history, so a listener can see an event for the watched directory's own
-  creation. Recursive watching currently uses the prelude's per-directory
-  walk on both platforms.
-- **`process.memoryUsage().rss` reports peak RSS** (via `getrusage`) rather
-  than current RSS; Linux reads `/proc/self/statm` for the current value.
-- **The resolver does not read `/etc/hosts`** on either platform; it queries
-  DNS directly. Node honors the hosts file.
-- **TLS trust store** is whatever the linked OpenSSL was built with (Homebrew's
-  OpenSSL 3 CA file for `--config=macos`), not the macOS Keychain.
+  FSEvents for directories and kqueue for files on macOS. Recursive watching
+  uses one native FSEvents stream on macOS (`UV_FS_EVENT_RECURSIVE`) and the
+  prelude's per-directory walk on Linux. Watcher slots are allocated
+  dynamically, so there is no fixed 32-watcher cap, and watchers support
+  `ref()`/`unref()`. On macOS, FSEvents coalesces and may report a write as
+  `rename` before later reporting `change` (Node inherits the same behaviour);
+  FSEvents also replays recent history, so a listener can see an event for the
+  watched directory's own creation.
+- **`process.memoryUsage().rss` is the current resident set size** on both
+  platforms, via libuv's `uv_resident_set_memory` (the same call Node uses).
+- **Name resolution:** `dns.lookup` and `net.connect` use `uv_getaddrinfo`, so
+  `/etc/hosts` is honored like Node. `dns.resolve*` queries DNS directly and
+  bypasses the hosts file, also like Node.
+- **TLS trust store** is the linked OpenSSL CA bundle (Homebrew's
+  `ca-certificates` for `--config=macos`), not the macOS Keychain. Node uses
+  its bundled Mozilla roots by default, also not the Keychain.
+  `NODE_EXTRA_CA_CERTS` extends the default store; `SSL_CERT_FILE` and
+  `SSL_CERT_DIR` are honored by OpenSSL.
+- **Apple Silicon only.** macOS builds are arm64; Intel Macs are not supported.
 - **Toolchain:** macOS requires LDC 1.43 or newer (Homebrew); the Linux pins do
-  not apply. `integration.sh` and `gate.sh` run on both platforms; only the
-  ASan pass is Linux-only.
+  not apply. `integration.sh` and `gate.sh` run on both platforms.
+  AddressSanitizer runs on both; LeakSanitizer is Linux-only because libuv's
+  FSEvents thread and OpenSSL keep process-lifetime allocations. The release
+  tarball bundles the Homebrew dylibs and does not need Homebrew at runtime.
 
 ## fs
 
@@ -1047,7 +1056,7 @@ context. This is a deliberate compatibility limit, not a pending bug.
 - `path` is POSIX-only (`sep` is `/`); `path.win32` and `parse`/`format` are
   not provided.
 - `os` provides `platform`, `arch`, `type`, `release`, `hostname`, `tmpdir`,
-  `homedir`, `cpus` (model/speed placeholders), `totalmem`, `freemem`, `eol`,
+  `homedir`, `cpus` (model/speed/times), `totalmem`, `freemem`, `eol`,
   `devNull`, `endianness`. `loadavg`, `networkInterfaces`, `userInfo` and
   `availableParallelism` are not provided.
 - `URL`, `TextEncoder`/`TextDecoder`, `fetch`, `http`, `net`, `dns` and

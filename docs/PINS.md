@@ -20,7 +20,8 @@ One place for every pin. `scripts/bootstrap.sh` verifies the toolchain and Quick
 The macOS row is an exception: the pinned LDC 1.36 cannot run on current macOS
 releases, so macOS uses Homebrew's LDC 1.43+ with
 `DJS_ALLOW_VERSION_DRIFT=1`, and Homebrew's libuv/OpenSSL/Brotli rather than
-the pinned Linux versions.
+the pinned Linux versions. macOS support is arm64 (Apple Silicon) only; Intel
+Macs are not a target.
 
 QuickJS-NG is built by `bootstrap.sh` with `QJS_BUILD_EXAMPLES=OFF` and
 `QJS_ENABLE_INSTALL=OFF`. `qjs` (the oracle used for the smoke test) needs

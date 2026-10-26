@@ -97,19 +97,26 @@ dub build --build=release --compiler=ldc2 --config=macos
 **Toolchain:** macOS needs LDC **1.43 or newer** (Homebrew's `ldc`); the
 pinned 1.36 cannot run on current macOS releases, so
 `DJS_ALLOW_VERSION_DRIFT=1` is required and the Linux pins in `docs/PINS.md`
-do not apply. `--config=macos` links Homebrew's OpenSSL 3/Brotli/libuv instead
-of the Linux sonames; the release tarball therefore needs those Homebrew
-formulae at runtime.
+do not apply. `--config=macos` links Homebrew's OpenSSL 3/Brotli/libuv. The
+release tarball bundles those dylibs under `lib/` (install names rewritten to
+`@executable_path`), so running it does **not** require Homebrew; building
+from source still does.
 
-Known gaps on macOS: `process.memoryUsage().rss` reports peak RSS
-(`getrusage`) rather than current, and the resolver does not read
-`/etc/hosts`.
+**Support boundary:** macOS builds are arm64 (Apple Silicon) only. Intel Macs
+are not supported.
+
+Known differences on macOS: TLS uses the linked OpenSSL CA bundle rather than
+the macOS Keychain (Node uses its own bundled Mozilla roots by default, also
+not the Keychain); use `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` or `SSL_CERT_DIR`
+for private roots. `fs.watch` inherits FSEvents' coalescing and event-order
+quirks, as Node does.
 
 The suite runs natively as well: install `coreutils` for `timeout`, then
-`./scripts/integration.sh`. `./scripts/gate.sh` runs every gate except the
-ASan pass (Linux-only for now). CI runs the integration suite, the
-permission/network gates, Express, and the Node differential on macOS arm64;
-the release job builds and packages with `--config=macos`.
+`./scripts/integration.sh`. `./scripts/gate.sh` runs every gate; AddressSanitizer
+runs on both platforms, while LeakSanitizer is Linux-only (libuv's FSEvents
+thread and OpenSSL keep process-lifetime allocations). CI runs the integration
+suite, the permission/network gates, Express, and the Node differential on
+macOS arm64; the release job builds, bundles, and smoke-tests the artifact.
 
 ## Usage
 
