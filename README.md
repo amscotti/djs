@@ -23,7 +23,7 @@ that is useful or fun for someone else. There is no support contract, no securit
 response process, and no promise that a given Node package works. Do not run
 untrusted code with it and do not put it in front of users who matter.
 
-**Current state: v0.16.3.** The Node API level it emulates is **22.x**:
+**Current state: v0.16.4.** The Node API level it emulates is **22.x**:
 `process.versions.node` reports `22.11.0` (the level implemented) while
 `process.version` reports DJS's own version, as Deno does. Breadth is tracked
 per module in [`docs/COMPATIBILITY-SCORE.md`](docs/COMPATIBILITY-SCORE.md);
