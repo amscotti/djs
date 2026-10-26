@@ -255,7 +255,7 @@ JSValue JS_GetImportMeta(JSContext *ctx, JSModuleDef *m);
 4. Cache the module object (keyed by the canonical path) before executing to tolerate cycles.
 5. JSON files return the parsed value.
 
-ESM importing CJS gets the `module.exports` value as `default`; named properties are detected heuristically from the common `exports.x` / `module.exports = {x}` / `Object.defineProperty` patterns (`modules/cjsnames.d`).
+ESM importing CJS gets the `module.exports` value as `default`; named properties are detected heuristically from the common `exports.x` / `module.exports = {x}` / `Object.defineProperty` patterns (`modules/cjsnames.d`). Barrel re-exports (`__exportStar(require(...), exports)`, `__export(require(...))`, `module.exports = require(...)`) are resolved and scanned recursively, with cycle and depth bounds.
 
 ## 9. API layer
 

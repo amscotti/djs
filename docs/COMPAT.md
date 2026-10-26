@@ -301,7 +301,10 @@ contents). The CJS named-export scanner recognizes `exports['quoted-key']`
 and `module.exports['quoted-key']` assignments (matching cjs-module-lexer),
 no longer treats `==` comparisons as exports, and non-identifier names are
 exposed through string export names in the ESM facade instead of
-generating invalid syntax.
+generating invalid syntax. It also follows barrel re-exports
+(`__exportStar(require(...), exports)`, `__export(require(...))`,
+`module.exports = require(...)`) by resolving the target CJS module and
+scanning it recursively, with cycle and depth bounds.
 
 ## macOS
 
