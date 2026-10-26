@@ -10,6 +10,13 @@ const os = require('os');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'djs-watch-'));
 const base = path.basename(dir);
+// A watch on a missing path surfaces the OS error code, not EINVAL.
+try {
+    fs.watch(path.join(dir, 'missing'), function () {});
+    console.log('missing-error none');
+} catch (e) {
+    console.log('missing-error', e.code);
+}
 const seen = [];
 const watcher = fs.watch(dir, function (event, filename) {
     seen.push([event, filename]);
@@ -49,7 +56,8 @@ function finish() {
     console.log('file-event', fileSeen.length > 0, fileSeen.length > 0 ? fileSeen[0][0] : '-');
     console.log('file-name', fileSeen.length > 0 ? fileSeen[0][1] === 'single.txt' : false);
 
-    // close() stops delivery.
+    // close() stops delivery and is idempotent.
+    watcher.close();
     watcher.close();
     fileWatcher.close();
     const before = seen.length + fileSeen.length;

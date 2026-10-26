@@ -2588,8 +2588,12 @@ private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int arg
         registryRelease(ctx, &rt.registry, cb);
         w.cb = 0;
         uv_close(cast(uv_handle_t*) ev, &watchHandleClosed);
+        // uv_fs_event_start returns a negative libuv code (on Unix,
+        // -errno). throwFsError expects a positive errno.
         int sysErr = uv_translate_sys_error(rc);
-        return throwFsError(ctx, sysErr > 0 ? sysErr : EINVAL, path, "watch");
+        if (sysErr < 0) sysErr = -sysErr;
+        if (sysErr <= 0) sysErr = EINVAL;
+        return throwFsError(ctx, sysErr, path, "watch");
     }
     return jsInt(w.id);
 }
@@ -2603,6 +2607,9 @@ private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int arg
     foreach (ref w; watches)
     {
         if (!w.used || w.id != id) continue;
+        // close() is idempotent: a second call (or one from inside the event
+        // callback) must not uv_close the same handle twice.
+        if (w.closing) return jsUndefined();
         w.closing = true;
         if (w.cb != 0) { registryRelease(ctx, &w.rt.registry, w.cb); w.cb = 0; }
         if (w.ev !is null)

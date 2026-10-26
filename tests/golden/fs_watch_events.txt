@@ -1,3 +1,4 @@
+missing-error ENOENT
 create-event true rename
 rename-event true
 delete-event true
