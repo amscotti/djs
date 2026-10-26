@@ -87,7 +87,9 @@ fs.writeFileSync(path.join(ulDir, 'victim'), 'x');
 fs.unlink(path.join(ulDir, 'victim'), ok(record('unlink'), 'unlink', function (r) {
     r('unlink ' + !fs.existsSync(path.join(ulDir, 'victim')));
 }));
-fs.unlink(path.join(ulDir, 'victim'), fail(record('unlink-missing'), 'unlink-missing', function (r, e) {
+// A distinct missing path: two unlinks of the same file would race, and the
+// threadpool does not guarantee submission order.
+fs.unlink(path.join(ulDir, 'missing'), fail(record('unlink-missing'), 'unlink-missing', function (r, e) {
     r('unlink-missing ' + e.code);
 }));
 
