@@ -11,6 +11,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  macos:
+    # Native arm64 build plus the portable suite. The Linux job runs the full
+    # gate; this one runs the checks that exercise the platform-specific code
+    # (fs, net, dgram, process, child_process) and the Node differential.
+    runs-on: macos-14
+    timeout-minutes: 50
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          brew install ldc dub libuv openssl@3 brotli ninja cmake pkg-config coreutils
+
+      - name: Cache the pinned QuickJS build
+        uses: actions/cache@v4
+        with:
+          path: vendor/quickjs-ng
+          key: qjs-${{ runner.os }}-${{ hashFiles('scripts/patches/quickjs-array-buffer-accounting.patch') }}
+
+      - name: Bootstrap
+        env:
+          # Homebrew's LDC/libuv are newer than the Linux pins. macOS needs
+          # LDC >= 1.43; the pinned 1.36 cannot run on current macOS.
+          DJS_ALLOW_VERSION_DRIFT: "1"
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+        run: ./scripts/bootstrap.sh
+
+      - name: Integration tests (builds --config=macos, runs dub test)
+        run: ./scripts/integration.sh
+
+      - name: Permission and network gates
+        run: |
+          ./scripts/gate-permissions.sh
+          ./scripts/gate-net.sh
+
+      - name: Express
+        run: ./scripts/gate-express.sh
+
+      - name: Differential against Node
+        run: ./scripts/diff-node.sh
+
   linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 40

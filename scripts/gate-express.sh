@@ -4,12 +4,13 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib-portable.sh"
 BIN="$ROOT/djs"
 APP="$ROOT/examples/express-app"
 LOG="$ROOT/.dub/express.log"
 
 if [ ! -d "$APP/node_modules/express" ] && command -v npm >/dev/null 2>&1; then
-    (cd "$APP" && timeout 180 npm install --no-audit --no-fund >/dev/null 2>&1) || true
+    (cd "$APP" && tmo 180 npm install --no-audit --no-fund >/dev/null 2>&1) || true
 fi
 if [ ! -d "$APP/node_modules/express" ]; then
     echo "express gate skipped (express not installed and npm unavailable)"

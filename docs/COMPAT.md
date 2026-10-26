@@ -312,14 +312,15 @@ following are the current platform differences:
 - **TLS trust store** is whatever the linked OpenSSL was built with (Homebrew's
   OpenSSL 3 CA file for `--config=macos`), not the macOS Keychain.
 - **Toolchain:** macOS requires LDC 1.43 or newer (Homebrew); the Linux pins do
-  not apply. `integration.sh`/`gate.sh` remain Linux-only.
+  not apply. `integration.sh` and `gate.sh` run on both platforms; only the
+  ASan pass is Linux-only.
 
 ## fs
 
 - `readFile`/`readFileSync` return a `Buffer` (a `Uint8Array` subclass).
-- Write functions accept `utf8`, `latin1`/`binary`, `ascii`, `hex` and `base64`
-  for string data. `utf16le`/`ucs2` are not implemented. `ArrayBuffer`, typed
-  array and `DataView` inputs are copied byte-for-byte.
+- Write functions accept `utf8`, `latin1`/`binary`, `ascii`, `hex`, `base64`
+  and `utf16le`/`ucs2` for string data. `ArrayBuffer`, typed array and
+  `DataView` inputs are copied byte-for-byte.
 - `readFile` caps a single read at 512 MiB (`DJS_MAX_FILE_SIZE` can lower it)
   and non-regular files at 16 MiB. Exceeding the cap fails with `EFBIG`;
   Node reads up to its own 2 GiB string limit.

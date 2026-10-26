@@ -3,6 +3,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib-portable.sh"
 mkdir -p gates .dub
 BIN="$ROOT/.dub/asan/djs-asan"
 log="$ROOT/.dub/sanitize-build.log"
@@ -43,7 +44,7 @@ for name in "${cases[@]}"; do
         continue
     fi
     ran=$((ran+1))
-    ASAN_OPTIONS=detect_leaks=1:exitcode=1 timeout 60 "$BIN" -A "$js" \
+    ASAN_OPTIONS=detect_leaks=1:exitcode=1 tmo 60 "$BIN" -A "$js" \
         >/dev/null 2>".dub/asan-$name.err"
     if grep -Eq 'ERROR: (Address|Leak)Sanitizer|SUMMARY: AddressSanitizer' ".dub/asan-$name.err"; then
         echo "gate-sanitize: FAIL $name" >&2

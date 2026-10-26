@@ -7,6 +7,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib-portable.sh"
 BIN="$ROOT/djs"
 VERSION="v$(tr -d '[:space:]' < "$ROOT/VERSION")"
 TMP="$ROOT/tests/tmp"
@@ -15,7 +16,7 @@ rm -f "$TMP"/*.out "$TMP"/*.err "$TMP"/*.diff
 
 if [ "${DJS_SKIP_BUILD:-0}" != "1" ]; then
     echo "== build =="
-    if ! dub build --build=release >"$TMP/build.log" 2>&1; then
+    if ! dub build --build=release $DJS_DUB_CONFIG >"$TMP/build.log" 2>&1; then
         cat "$TMP/build.log" >&2
         echo "integration: build failed" >&2
         exit 1
@@ -31,7 +32,7 @@ bad() { printf 'FAIL %s\n' "$1" >&2; fail=$((fail + 1)); }
 run_case() {
     local js="$1" base="$2"
     local out="$TMP/$base.out" err="$TMP/$base.err"
-    timeout 30 "$BIN" ${DJS_TEST_FLAGS:--A} "$js" >"$out" 2>"$err"
+    tmo 30 "$BIN" ${DJS_TEST_FLAGS:--A} "$js" >"$out" 2>"$err"
     local code=$?
 
     local expectedExit=0
@@ -43,14 +44,23 @@ run_case() {
         sed -n '1,20p' "$err" >&2
         return
     fi
-    if [ ! -f "tests/golden/$base.txt" ]; then
+    if [ ! -f "tests/golden/$base.txt" ] && [ ! -f "tests/golden/$base.$DJS_PLAT.txt" ]; then
         bad "$base missing golden"
         return
     fi
     # Goldens must not embed this checkout's absolute path: the same suite runs
     # from /home/runner/work/djs/djs in CI. Normalize the root before diffing.
-    sed "s|$ROOT|__ROOT__|g" "$out" >"$TMP/$base.norm"
-    if ! diff -u "tests/golden/$base.txt" "$TMP/$base.norm" >"$TMP/$base.diff"; then
+    # /private/* prefixes exist only on macOS (mkdtemp/realpath canonicalize
+    # through them); mapping them keeps one golden per platform where possible.
+    sed -e "s|$ROOT|__ROOT__|g" -e "s|/private/tmp|/tmp|g" -e "s|/private/var|/var|g" \
+        "$out" >"$TMP/$base.norm"
+    # A per-platform golden wins when it exists (for output that genuinely
+    # differs: platform strings, per-OS values).
+    local golden="tests/golden/$base.txt"
+    if [ -f "tests/golden/$base.$DJS_PLAT.txt" ]; then
+        golden="tests/golden/$base.$DJS_PLAT.txt"
+    fi
+    if ! diff -u "$golden" "$TMP/$base.norm" >"$TMP/$base.diff"; then
         bad "$base stdout"
         cat "$TMP/$base.diff" >&2
         return
@@ -134,7 +144,11 @@ check_stdout "eval-microtask-timer" "$(printf 'm\nt')" \
 check_stdout "eval-version" "$VERSION" "$BIN" --version
 check_exit "process-exit-code" 5 "$BIN" -e 'process.exit(5)'
 check_exit "exit-code-wins" 3 "$BIN" -e 'Promise.reject(new Error("x")); process.exit(3)'
-check_exit "timeout" 1 "$BIN" --timeout 100 tests/js/fixtures/infinite.js
+if [ -z "$DJS_TIMEOUT" ]; then
+    bad "timeout (no timeout utility installed; brew install coreutils)"
+else
+    check_exit "timeout" 1 "$BIN" --timeout 100 tests/js/fixtures/infinite.js
+fi
 check_exit "memory-limit" 1 "$BIN" --memory-limit 8388608 tests/js/fixtures/oom.js
 
 # DJS_MAX_FILE_SIZE caps reads (documented env override for the 512 MiB
@@ -149,9 +163,12 @@ check_stdout "max-file-size-overflow-defaults" "16" env DJS_MAX_FILE_SIZE=999999
     -e "console.log(require('fs').readFileSync('$TMP/big.bin').length)"
 
 # --help drifted from the parser once; every documented flag must be listed.
+# Capture it once: piping into `grep -q` makes grep exit early and can race
+# the writer on macOS.
+helpText="$("$BIN" --help 2>&1)"
 for flag in --allow-read --allow-write --allow-env --allow-sys --allow-net \
             --allow-run --allow-listen --permission-set --config --no-prompt; do
-    if "$BIN" --help | grep -q -- "$flag"; then
+    if grep -q -- "$flag" <<<"$helpText"; then
         ok "help-lists-$flag"
     else
         bad "help-lists-$flag missing from --help"
@@ -178,7 +195,7 @@ else
 fi
 
 # A zero-delay timer fires before the next prompt, and EOF does not hang.
-replAsync="$(printf 'setTimeout(()=>console.log("T"),0)\n' | timeout 5 "$BIN" 2>"$TMP/repl.err")"
+replAsync="$(printf 'setTimeout(()=>console.log("T"),0)\n' | tmo 5 "$BIN" 2>"$TMP/repl.err")"
 if printf '%s' "$replAsync" | grep -q 'T'; then
     ok "repl-async"
 else
@@ -195,7 +212,7 @@ if [ "$pipeStatus" -eq 0 ]; then ok "sigpipe-ignored"; else bad "sigpipe-ignored
 # A blocked fs read must not stop process.exit from delivering its code.
 rm -f "$TMP/fifo"
 mkfifo "$TMP/fifo"
-timeout 5 "$BIN" -e "fs.readFile('$TMP/fifo', () => {}); setTimeout(() => process.exit(3), 10)" \
+tmo 5 "$BIN" -e "fs.readFile('$TMP/fifo', () => {}); setTimeout(() => process.exit(3), 10)" \
     >/dev/null 2>&1
 fifoCode=$?
 rm -f "$TMP/fifo"
@@ -253,7 +270,7 @@ if [ "$rlOut" = "one|two" ]; then ok "readline-stream"; else bad "readline-strea
 # dub test must not replace the runtime binary.
 if [ "${DJS_SKIP_BUILD:-0}" = "1" ]; then
     ok "dub-test-skipped"
-elif dub test >/dev/null 2>&1; then
+elif dub test $DJS_UT_CONFIG >/dev/null 2>&1; then
     afterTest="$("$BIN" -e 'console.log(42)' 2>/dev/null)"
     if [ "$afterTest" = "42" ]; then ok "dub-test-keeps-runtime"; else bad "dub-test-keeps-runtime"; fi
 else

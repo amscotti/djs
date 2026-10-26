@@ -1,0 +1,6 @@
+darwin true Darwin
+string string true
+true true /dev/null
+true true
+true true
+function LE

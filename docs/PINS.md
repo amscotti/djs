@@ -17,6 +17,11 @@ One place for every pin. `scripts/bootstrap.sh` verifies the toolchain and Quick
 | JSValue ABI | 16 bytes, 8-byte aligned, non-NaN-boxed, 64-bit | `scripts/check-abi.sh` |
 | `JSMemoryUsage` mirror | 208 bytes (26 × int64) | `scripts/check-abi.sh` |
 
+The macOS row is an exception: the pinned LDC 1.36 cannot run on current macOS
+releases, so macOS uses Homebrew's LDC 1.43+ with
+`DJS_ALLOW_VERSION_DRIFT=1`, and Homebrew's libuv/OpenSSL/Brotli rather than
+the pinned Linux versions.
+
 QuickJS-NG is built by `bootstrap.sh` with `QJS_BUILD_EXAMPLES=OFF` and
 `QJS_ENABLE_INSTALL=OFF`. `qjs` (the oracle used for the smoke test) needs
 `quickjs-libc`, so that library is built in the same tree but is **never

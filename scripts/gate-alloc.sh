@@ -4,8 +4,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-mkdir -p gates
-if dub test >.dub/alloc.log 2>&1; then
+mkdir -p gates .dub
+. ./scripts/lib-portable.sh
+if dub test $DJS_UT_CONFIG >.dub/alloc.log 2>&1; then
     printf 'gate-alloc ok %s gc_alloc_delta=0 cycles=1000\n' \
         "$(date -u +%FT%TZ)" >> gates/alloc.txt
     echo "gate-alloc: ok"

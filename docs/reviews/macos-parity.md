@@ -1,9 +1,9 @@
 # macOS parity — research (no code changed)
 
-**Status:** research (T1–T3 now implemented on branch `macos-support`:
-platform shims, behavior fixes, and the `uv_fs_event` watch port §5 option A).
-The findings below are the original research; §5 documents the chosen backend.
-All experiments ran on throwaway copies under `/tmp`.
+**Status:** implemented (T1–T4) on branch `macos-support`. The findings below
+are the original research; §12 records what landed, the validation evidence,
+and the remaining differences. All original experiments ran on throwaway
+copies under `/tmp`.
 
 **Environment:** macOS 26.6 (darwin25.6.0), Apple silicon (arm64).
 Toolchains tried: LDC 1.36.0 (mise, the Linux pin) and LDC 1.43.0 (Homebrew,
@@ -290,7 +290,53 @@ week.** Adding watch parity (T3): one to two more.
 - No x86_64 macOS consideration (brew runner is arm64; Intel Macs would need
   their own job).
 
-## Appendix — verified Darwin constants (from the real SDK headers)
+## 12. Implementation result (T1–T4)
+
+Landed on `macos-support`:
+
+- **T1 — compile.** `src/djs/platform.d` is the single compatibility layer:
+  Darwin `O_CLOEXEC`/`O_NOFOLLOW`/`CLOCK_MONOTONIC`, `clock_gettime`,
+  `fdatasync`, the `Mode` width alias (uint/ushort), `environPtr()`, and
+  `peakRssBytes()` (`ru_maxrss` is `ru_opaque[0]` in Darwin druntime). No
+  changes to the runtime architecture.
+- **T2 — behaviour.** Portable `execvpe` (fixed-buffer PATH search running
+  after `fork`, since glibc's is absent on Darwin); `os.cpus`/`totalmem`/
+  `freemem`/`uptime` via the right `sysconf` numbers, `sysctl hw.memsize`,
+  and `vm.page_free_count`; `process.rss`/umask/environ; dgram sockets via
+  `fcntl` and Darwin's IP option numbers (`IP_TTL` is 4, not 2); permission
+  audit flags; **`fs.constants` now reports the host's real `O_*` values**
+  (the prelude had Linux values hardcoded; Darwin's differ, e.g. `O_CREAT`
+  is 512).
+- **T3 — `fs.watch`.** The inotify implementation is replaced by
+  `uv_fs_event` (inotify on Linux; FSEvents for directories and kqueue for
+  files on macOS). The JS contract is unchanged. Start failures translate the
+  negative libuv code back to the host errno. New `fs_watch_events` coverage:
+  create/write/rename/delete, single-file watch, missing-path `ENOENT`, and
+  post-`close` silence; stable on both platforms.
+- **T4 — tests, CI, packaging.** `scripts/lib-portable.sh` centralises the
+  platform name, `dub` configs, `timeout`/`gtimeout`, and umask; the harness
+  normalises `/private/{tmp,var}` and supports `*.darwin.txt` goldens;
+  `dub.json` has `unittest-macos`/`sanitize-macos`; CI has a macOS arm64 job
+  (integration, permissions, net, Express, Node differential); the release
+  smoke test now passes `-A`; `package.sh` already selected `--config=macos`.
+
+Validation evidence (both platforms, same commit):
+
+- Linux: full `scripts/gate.sh` green — build, 10 unittest modules, 181
+  integration cases, permission gate, net gate, Express, examples, compat,
+  ASan/LSan, Node differential, soak.
+- macOS 26 arm64 (LDC 1.43.0, Homebrew libuv/OpenSSL 3/Brotli): the same gates
+  green except the ASan pass, which is skipped on Darwin. `otool -L` confirms
+  `openssl@3`, not the unversioned `@4` symlink.
+- Behaviour spot-checks against Node: `os.uptime()` identical;
+  `os.freemem()` follows libuv's `free_count * pagesize`; `fdatasyncSync`
+  works; `os.cpus()` reports all 10 cores.
+
+Remaining differences (documented in `docs/COMPAT.md`): `rss` is peak rather
+than current, the resolver does not read `/etc/hosts` on either platform, TLS
+trust is the linked OpenSSL's CA store (not the Keychain), the release tarball
+needs the Homebrew formulae at runtime, and ASan is not wired up for Darwin.
+
 
 | Constant | Darwin value | Source |
 |---|---|---|

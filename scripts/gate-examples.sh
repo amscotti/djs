@@ -3,6 +3,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib-portable.sh"
 DJS="$ROOT/djs"
 LOGDIR="$ROOT/.dub"
 mkdir -p "$LOGDIR"
@@ -53,6 +54,18 @@ run_app() {
     kill "$APP_PID" 2>/dev/null
     wait "$APP_PID" 2>/dev/null
 }
+
+# The example apps carry their own package.json; install on a fresh checkout
+# (the gate skips cleanly if npm is unavailable offline).
+for app in progress-app hono-progress-app; do
+    if [ ! -d "$ROOT/examples/$app/node_modules" ] && command -v npm >/dev/null 2>&1; then
+        ( cd "$ROOT/examples/$app" && tmo 180 npm install --no-audit --no-fund >/dev/null 2>&1 ) || true
+    fi
+    if [ ! -d "$ROOT/examples/$app/node_modules" ]; then
+        echo "examples: skipped ($app dependencies unavailable)"
+        exit 0
+    fi
+done
 
 run_app progress-app 3101 express
 run_app hono-progress-app 3102 hono

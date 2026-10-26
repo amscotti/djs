@@ -3,6 +3,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib-portable.sh"
 TMP=".dub/net-gate"
 mkdir -p "$TMP"
 PORTFILE="$TMP/port"
@@ -20,7 +21,7 @@ if [ ! -s "$PORTFILE" ]; then
     exit 1
 fi
 PORT="$(cat "$PORTFILE")"
-DJS_NET_PORT="$PORT" timeout 20 ./djs -A --allow-net="127.0.0.1:$PORT" tests/net/net_http.js >"$TMP/out" 2>"$TMP/err"
+DJS_NET_PORT="$PORT" tmo 20 ./djs -A --allow-net="127.0.0.1:$PORT" tests/net/net_http.js >"$TMP/out" 2>"$TMP/err"
 rc=$?
 if [ "$rc" -ne 0 ]; then
     echo "net-gate: exit $rc" >&2

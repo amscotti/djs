@@ -13,7 +13,11 @@ console.log("uptime", process.uptime() >= 0, os.uptime() > 0);
 console.log("loadavg", os.loadavg().length === 3, typeof os.loadavg()[0]);
 
 const ifaces = os.networkInterfaces();
-console.log("ifaces", Object.keys(ifaces).length > 0, Array.isArray(ifaces.lo));
+// The loopback interface is `lo` on Linux and `lo0` on macOS.
+const hasInternal = Object.keys(ifaces).some(function (name) {
+    return ifaces[name].some(function (entry) { return entry.internal === true; });
+});
+console.log("ifaces", Object.keys(ifaces).length > 0, hasInternal);
 console.log("userinfo", typeof os.userInfo().username);
 
 const st = fs.statfsSync(".");

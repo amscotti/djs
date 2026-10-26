@@ -4,6 +4,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+. "$ROOT/scripts/lib-portable.sh"
 BIN="$ROOT/djs"
 [ -x "$BIN" ] || { echo "fuzz: build first" >&2; exit 1; }
 mkdir -p .dub/fuzz
@@ -14,7 +15,7 @@ run() {
     local label="$1" code="$2"
     n=$((n + 1))
     echo "$code" > ".dub/fuzz/$n.js"
-    timeout 10 "$BIN" ".dub/fuzz/$n.js" >/dev/null 2>".dub/fuzz/$n.err"
+    tmo 10 "$BIN" ".dub/fuzz/$n.js" >/dev/null 2>".dub/fuzz/$n.err"
     local rc=$?
     if [ "$rc" -ge 128 ] || [ "$rc" -eq 70 ]; then
         echo "fuzz: FAIL $label (rc=$rc)" >&2

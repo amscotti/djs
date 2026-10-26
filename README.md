@@ -103,8 +103,13 @@ formulae at runtime.
 
 Known gaps on macOS: `process.memoryUsage().rss` reports peak RSS
 (`getrusage`) rather than current, and the resolver does not read
-`/etc/hosts`. `integration.sh`/`gate.sh` are Linux-only; the release workflow
-runs a build and smoke test on macOS, not the full suite.
+`/etc/hosts`.
+
+The suite runs natively as well: install `coreutils` for `timeout`, then
+`./scripts/integration.sh`. `./scripts/gate.sh` runs every gate except the
+ASan pass (Linux-only for now). CI runs the integration suite, the
+permission/network gates, Express, and the Node differential on macOS arm64;
+the release job builds and packages with `--config=macos`.
 
 ## Usage
 
