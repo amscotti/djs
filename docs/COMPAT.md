@@ -181,8 +181,8 @@ and `rows` come from the `COLUMNS`/`LINES` environment variables, defaulting to
   registered but is never emitted. Signal
   listeners receive the numeric signal and do not keep the loop alive.
 - `process.reallyExit` is not provided.
-- The platform string comes from the build (`version(linux)`), not a runtime
-  probe.
+- The platform string comes from the build target (`process.platform` is
+  `linux` or `darwin`; `os.platform`/`os.type` agree), not a runtime probe.
 - The REPL is line-at-a-time and prints the raw `String(value)` of an
   expression result (objects print as `[object Object]`), not `util.inspect`.
   Timers with a ready deadline run before the next prompt; pending timers are
@@ -312,11 +312,12 @@ following are the current platform differences:
 - **Name resolution:** `dns.lookup` and `net.connect` use `uv_getaddrinfo`, so
   `/etc/hosts` is honored like Node. `dns.resolve*` queries DNS directly and
   bypasses the hosts file, also like Node.
-- **TLS trust store** is the linked OpenSSL CA bundle (Homebrew's
-  `ca-certificates` for `--config=macos`), not the macOS Keychain. Node uses
-  its bundled Mozilla roots by default, also not the Keychain.
-  `NODE_EXTRA_CA_CERTS` extends the default store; `SSL_CERT_FILE` and
-  `SSL_CERT_DIR` are honored by OpenSSL.
+- **TLS trust store** is the linked OpenSSL store plus `<exe>/etc/cert.pem`
+  and `/etc/ssl/cert.pem` fallbacks (the release tarball ships a Mozilla roots
+  bundle), not the macOS Keychain. Node uses its bundled Mozilla roots by
+  default, also not the Keychain. `NODE_EXTRA_CA_CERTS` extends the default
+  store and is ignored with a warning if unreadable (as in Node);
+  `SSL_CERT_FILE` and `SSL_CERT_DIR` are honored by OpenSSL.
 - **Apple Silicon only.** macOS builds are arm64; Intel Macs are not supported.
 - **Toolchain:** macOS requires LDC 1.43 or newer (Homebrew); the Linux pins do
   not apply. `integration.sh` and `gate.sh` run on both platforms.
@@ -559,8 +560,10 @@ the v0.16.2 section).
 - `cp`/`cpSync` (recursive trees, symlinks, `force`, `errorOnExist`,
   `dereference`), `readv`/`writev` (+sync/promise), `openAsBlob`, and
   `watch(..., {recursive:true})`.
-- Residual: `cp` does not preserve mode/timestamps or run filters; recursive
-  watch does not prune deleted-directory watchers.
+- Residual: `cp` does not preserve mode/timestamps or run filters. Recursive
+  watching prunes deleted/renamed-away subtrees on the Linux walk; native
+  FSEvents simply stops covering moved trees. Watchers support `ref`/`unref`
+  and `persistent:false`.
 
 ## stream/consumers and readline/promises (v0.16.1)
 
@@ -799,10 +802,13 @@ context. This is a deliberate compatibility limit, not a pending bug.
 
 ## File watching (v0.12.3)
 
-- `fs.watch(path, options, listener)` uses inotify: `change` for
-  modify/attrib, `rename` for create/delete/move, with the affected filename.
-- `FSWatcher.close()` stops the watch and emits `close`. `options.recursive`
-  is supported as of v0.15.1 (watchers for deleted directories are not pruned).
+- `fs.watch(path, options, listener)` uses libuv fs events: inotify on Linux,
+  FSEvents/kqueue on macOS. `change` covers content changes and `rename`
+  create/delete/move; the affected filename is relative to the watched path.
+- `FSWatcher.close()` stops the watch and emits `close`; `ref`/`unref` and
+  `persistent:false` follow Node. `options.recursive` uses one native FSEvents
+  stream on macOS and a per-directory walk on Linux, which prunes watchers for
+  directories that disappear.
 - `fs.watchFile`/`fs.unwatchFile` poll with `interval` (default 5007 ms) and
   report the previous/current `Stats`.
 
@@ -928,14 +934,21 @@ context. This is a deliberate compatibility limit, not a pending bug.
 - `tls.connect({host, port, servername, rejectUnauthorized, caFile, certFile,
   keyFile, alpn})` returns a Duplex socket. The TCP connect and TLS handshake
   run on a libuv worker thread with a 10 second timeout; reads/writes stay on
-  the loop. `authorized` is set on connect, and verification failures surface
-  as `ERR_TLS_HANDSHAKE`.
+  the loop. `authorized` is set on connect. Verification failures use Node's
+  codes (`DEPTH_ZERO_SELF_SIGNED_CERT`, `UNABLE_TO_VERIFY_LEAF_SIGNATURE`,
+  `CERT_HAS_EXPIRED`, ...); hostname mismatches are
+  `ERR_TLS_CERT_ALTNAME_INVALID`, and other handshake failures remain
+  `ERR_TLS_HANDSHAKE`.
 - `caFile`/`ca` loads a custom CA bundle; `certFile`/`keyFile` present a client
   certificate; `alpn` is advertised and the selected value is exposed as
   `alpnProtocol`. Values are file paths, not PEM strings.
 - `rejectUnauthorized: false` disables both chain and hostname verification.
-  Otherwise the system CA store is used and the hostname is checked with
-  `SSL_set1_host`. Minimum protocol is TLS 1.2; SNI is sent.
+  Otherwise the default store (OpenSSL paths plus executable-relative/system
+  CA bundles and `NODE_EXTRA_CA_CERTS`) is used. Hostname matching mirrors
+  Node's `tls.checkServerIdentity`: SANs win, wildcards match one leftmost
+  label and never a TLD, IP SANs compare byte-wise, and the CN is used only
+  when no SAN of the host's family exists. Minimum protocol is TLS 1.2; SNI is
+  sent for DNS names but not IP literals.
 - `https.request`/`https.get` and `fetch(https://...)` use the same transport.
   `fetch` accepts the non-standard `rejectUnauthorized: false` option for
   local/self-signed testing.

@@ -341,13 +341,13 @@ descriptor, and watches it with a `uv_poll` handle. The poll callback owns the
 state machine: connect completion (`SO_ERROR`), reads, and queued writes.
 `net.Socket` in the prelude is an `EventEmitter` over those callbacks.
 
-Deliberate limits: DNS is blocking in name resolution only through the
-threadpool-backed `getaddrinfo` (`uv_getaddrinfo`); writes are
-queued and drained on writable events but a single `send` can still perform
-work in the callback; there is no TLS, no socket server and no backpressure
-beyond one queued buffer. `http` and `fetch` are prelude parsers over this
-client. TLS is deferred to the crypto phase and fails loudly rather than
-silently using plaintext.
+Deliberate limits: DNS blocks only in `getaddrinfo` (`uv_getaddrinfo` on the
+threadpool); writes are queued and drained on writable events but a single
+`send` can still perform work in the callback; backpressure remains one queued
+buffer. TLS (client and server) is OpenSSL 3 in `apis/tls.d`, with the
+handshake on a worker thread and reads/writes on `uv_poll`; HTTP/1.1, HTTP/2,
+WebSocket, `http` and `fetch` are layered over these transports (see
+`docs/COMPAT.md` for the exact surface).
 
 ## 10. Error handling, exit, and teardown
 
@@ -370,6 +370,14 @@ This matches Node's default `--unhandled-rejections=throw` closely enough to tes
 - JavaScript continues to the end of the current turn. `process.exit(0); console.log("still here")` prints — document this divergence from Node. The driver then breaks and runs teardown.
 - Do not call `JS_FreeContext`/`JS_FreeRuntime` inside the callback: the C stack still holds `JSValue`s and QuickJS's job loop will use the runtime after the call returns. That is a use-after-free.
 - `process.reallyExit` is not provided. `_exit` is reserved for fatal internal errors after flushing.
+
+**Module teardown ownership.** `runtimeTeardown` closes module state in a fixed
+order before the bounded drain: timers, fs watchers, sockets/TLS/dgram,
+signals, stdio and crypto. Handling callbacks that complete during the drain
+must check `shuttingDown`/`failed`/`exitRequested` before running more JS.
+Runtime-owned native state (the TLS CA store, watcher lists) is freed only
+when the loop did not get stuck; a stuck loop is abandoned with its workers
+rather than risking a use-after-free while `process.exit` returns.
 
 **Teardown runs only in `main`, after the loop returns.**
 
@@ -409,13 +417,15 @@ djs/
   src/djs/
     main.d                    # CLI, REPL, options, entry dispatch
     runtime.d                 # lifecycle, globals, prelude, job drain, loop, teardown
+    platform.d                # shared POSIX/druntime gaps (Darwin + Linux)
     registry.d                # callback slots (C memory, one JSValue each)
     bindings/quickjs.d        # extern(C) declarations + types
     bindings/value.d          # ScopedValue, conversions, helpers
     loop/libuv.d              # uv declarations (opaque types + *_size/accessors)
     apis/console.d
     apis/timers.d             # setTimeout/setInterval + recycling pool
-    apis/net.d                # TCP client sockets, uv_poll, DNS lookup gate
+    apis/net.d                # TCP client sockets, uv_poll, DNS lookup gate; HTTP server
+    apis/tls.d                # TLS client/server (OpenSSL), shared-CA store, hostname check
     apis/fs.d                 # read/write/append/stat/readdir/mkdir/unlink/rename/copy/rm/realpath;
                               # fd/open/read/write/close, chmod/chown/link/symlink/readlink, truncate, fsync
     apis/bytes.d              # Buffer codecs (utf8/latin1/hex/base64)
@@ -464,7 +474,7 @@ The D side asserts the same size/alignment, but only this C probe sees the engin
 - **JS integration tests** (`tests/js/*.js` + `tests/golden/*.txt`): run under `djs`, compare stdout/stderr/exit code. Required cases: async ordering, fs reads/writes (including a subarray and a dropped-buffer GC case), ESM/CJS interop and `ERR_REQUIRE_ESM`, cycles, JSON imports, uncaught errors, microtask throws, unhandled rejection timing, `process.exit` in a timer, stale timer ids, opaque-method misuse (`fs.readFile.call(1, ...)`), format-string injection, and module-root escape.
 - **Differential checks**: `scripts/diff-node.sh` runs a case list under both `node` and `djs`, normalizes temporary paths, and compares stdout plus exit status (the case list lives in the script; it is
   skipped cleanly when Node is absent). `docs/COMPAT.md` records every intentional difference; the golden suite remains the behavioural contract.
-- **Leak checks**: `process.memoryUsage()` exposes QuickJS heap + RSS; `scripts/gate-sanitize.sh` builds with `-fsanitize=address` and fails on any ASan/LSan report across 50 fixtures (every named case must resolve — a missing case fails the gate). `JS_DUMP_LEAKS` and Valgrind runs are **deferred**; LSan covers the same leak class for the shipped binary. The D unittest suite adds a 1,000-cycle timer churn assertion that the D GC allocation counter does not move.
+- **Leak checks**: `process.memoryUsage()` exposes QuickJS heap + RSS; `scripts/gate-sanitize.sh` builds with `-fsanitize=address`, verifies every listed case runs, and fails on an exit-status mismatch or any ASan/LSan report. Linux runs ASan + LSan; macOS runs ASan only, because libuv's FSEvents thread and OpenSSL keep process-lifetime allocations LSan would report. `JS_DUMP_LEAKS` and Valgrind runs are **deferred**. The D unittest suite adds a 1,000-cycle timer churn assertion that the D GC allocation counter does not move.
 - **Gate evidence**: `scripts/gate.sh` runs the ABI probe, the no-phase-refs check, build, the unittest suite (including the zero-GC-allocation counter), the integration suite, the ASan/LSan pass, the loopback networking gate, the Node differential and the soak test, and appends a line per step to `gates/`. A gate that leaves no artifact did not run.
 
 ## 14. Risks

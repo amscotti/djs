@@ -99,16 +99,20 @@ pinned 1.36 cannot run on current macOS releases, so
 `DJS_ALLOW_VERSION_DRIFT=1` is required and the Linux pins in `docs/PINS.md`
 do not apply. `--config=macos` links Homebrew's OpenSSL 3/Brotli/libuv. The
 release tarball bundles those dylibs under `lib/` (install names rewritten to
-`@executable_path`), so running it does **not** require Homebrew; building
-from source still does.
+`@executable_path`) plus a Mozilla CA bundle under `etc/`, so running it does
+**not** require Homebrew; building from source still does.
 
 **Support boundary:** macOS builds are arm64 (Apple Silicon) only. Intel Macs
-are not supported.
+are not supported. Release artifacts are ad-hoc signed, not notarized; a
+browser-downloaded tarball may need `xattr -d com.apple.quarantine <file>`
+before first run (or build from source). Notarization needs an Apple Developer
+account and is a distribution decision.
 
-Known differences on macOS: TLS uses the linked OpenSSL CA bundle rather than
-the macOS Keychain (Node uses its own bundled Mozilla roots by default, also
-not the Keychain); use `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` or `SSL_CERT_DIR`
-for private roots. `fs.watch` inherits FSEvents' coalescing and event-order
+Known differences on macOS: TLS uses the linked OpenSSL store or the bundled
+Mozilla roots, not the macOS Keychain (Node uses its own bundled Mozilla roots
+by default, also not the Keychain); use `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`
+or `SSL_CERT_DIR` for private roots. An unreadable `NODE_EXTRA_CA_CERTS` emits
+a warning and the default roots stay active, as in Node. `fs.watch` inherits FSEvents' coalescing and event-order
 quirks, as Node does.
 
 The suite runs natively as well: install `coreutils` for `timeout`, then

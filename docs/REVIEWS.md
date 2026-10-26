@@ -2,6 +2,13 @@
 
 A review round is closed only when every finding has an explicit disposition: **fixed**, **deferred** (with reason), or **rejected** (with reason). Reviewers write full findings under `docs/reviews/`; this file is the index and the disposition record.
 
+## Cross-cutting reviews
+
+- **macOS parity** (research, port T1–T4, follow-up parity pass):
+  `docs/reviews/macos-parity.md`.
+- **v0.16.4 hardening**: security and compatibility fixes, coverage-driven
+  follow-ups: `docs/reviews/v0.16.4-hardening.md`.
+
 ## Document versions
 
 | Document | Reviewed hash (draft) | Current hash | Status |

@@ -6,7 +6,12 @@ One place for every pin. `scripts/bootstrap.sh` verifies the toolchain and Quick
 |---|---|---|
 | OS | Ubuntu 24.04 x86_64 | `uname -a` |
 | D compiler | LDC 1.36.0 (LLVM) | `ldc2 --version` |
-| D compiler (macOS) | LDC 1.43.0+ (Homebrew) | `ldc2 --version` |
+| D compiler (macOS) | LDC 1.43.0 (Homebrew) | `ldc2 --version` |
+| DUB (macOS) | 1.42.0 | `dub --version` |
+| libuv (macOS) | 1.53.0 (Homebrew) | `pkg-config --modversion libuv` |
+| OpenSSL (macOS) | 3.5.9 (Homebrew) | `openssl version` |
+| Brotli (macOS) | 1.2.1 (Homebrew) | `brew list --versions brotli` |
+| CA roots (macOS artifact) | `ca-certificates` 2026-10-20 | `brew list --versions ca-certificates` |
 | Package manager | DUB 1.36.0 | `dub --version` |
 | QuickJS-NG | `v0.17.0` — commit `6d46d07d04041b40f4f49eaa7fdebe44c314c699` | `scripts/bootstrap.sh` |
 | libuv | 1.48.0 (system) | `pkg-config --modversion libuv` |
@@ -17,11 +22,14 @@ One place for every pin. `scripts/bootstrap.sh` verifies the toolchain and Quick
 | JSValue ABI | 16 bytes, 8-byte aligned, non-NaN-boxed, 64-bit | `scripts/check-abi.sh` |
 | `JSMemoryUsage` mirror | 208 bytes (26 × int64) | `scripts/check-abi.sh` |
 
-The macOS row is an exception: the pinned LDC 1.36 cannot run on current macOS
-releases, so macOS uses Homebrew's LDC 1.43+ with
-`DJS_ALLOW_VERSION_DRIFT=1`, and Homebrew's libuv/OpenSSL/Brotli rather than
-the pinned Linux versions. macOS support is arm64 (Apple Silicon) only; Intel
-Macs are not a target.
+The macOS rows are the validated Homebrew versions, not hard pins: the pinned
+LDC 1.36 cannot run on current macOS releases, Homebrew does not retain old
+versions, and `bootstrap.sh` is Linux-pinned. CI therefore uses
+`DJS_ALLOW_VERSION_DRIFT=1` on macOS, while the release gate records the actual
+runtime (`djs --version`, artifact smoke test) and the integration suite runs
+against the installed Homebrew libs. Treat the macOS rows as the versions this
+branch was validated with; an update should re-run the macOS gate. macOS
+support is arm64 (Apple Silicon) only; Intel Macs are not a target.
 
 QuickJS-NG is built by `bootstrap.sh` with `QJS_BUILD_EXAMPLES=OFF` and
 `QJS_ENABLE_INSTALL=OFF`. `qjs` (the oracle used for the smoke test) needs

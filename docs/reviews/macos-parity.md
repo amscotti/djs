@@ -290,11 +290,13 @@ week.** Adding watch parity (T3): one to two more.
 
 Landed on `macos-support`:
 
-- **T1 — compile.** `src/djs/platform.d` is the single compatibility layer:
+- **T1 — compile.** `src/djs/platform.d` centralizes the druntime/SDK gaps:
   Darwin `O_CLOEXEC`/`O_NOFOLLOW`/`CLOCK_MONOTONIC`, `clock_gettime`,
-  `fdatasync`, the `Mode` width alias (uint/ushort), `environPtr()`, and
-  `peakRssBytes()` (`ru_maxrss` is `ru_opaque[0]` in Darwin druntime). No
-  changes to the runtime architecture.
+  `fdatasync`, the `Mode` width alias (uint/ushort) and `environPtr()`.
+  Platform ABI constants used only by one module (dgram IP options, sysconf
+  names, execvpe) remain in that module under `version` blocks; `platform.d`
+  is the shared seam rather than the only `version` in the tree. The runtime
+  grew per-runtime TLS CA state and watcher lists as part of this work.
 - **T2 — behaviour.** Portable `execvpe` (fixed-buffer PATH search running
   after `fork`, since glibc's is absent on Darwin); `os.cpus`/`totalmem`/
   `freemem`/`uptime` via the right `sysconf` numbers, `sysctl hw.memsize`,
@@ -333,13 +335,17 @@ items: `rss` is now current via `uv_resident_set_memory`; watcher slots are
 dynamic and macOS uses native recursive FSEvents; `NODE_EXTRA_CA_CERTS`,
 `SSL_CERT_FILE` and `SSL_CERT_DIR` are honored; `os.cpus()` carries
 model/speed/times from `uv_cpu_info`; and the release artifact bundles the
-Homebrew dylibs with `@executable_path` install names. The macOS ASan gate now
+Homebrew dylibs with `@executable_path` install names plus a Mozilla CA bundle
+(`etc/cert.pem`), with an artifact HTTPS test that disables external CA paths.
+The macOS ASan gate now
 runs (AddressSanitizer; LSan leak detection stays Linux-only because libuv's
 FSEvents thread and OpenSSL keep process-lifetime allocations).
 
-Remaining differences: TLS uses OpenSSL's CA bundle rather than Node's bundled
-Mozilla roots (not the Keychain in either case); FSEvents event coalescing and
-ordering are OS-defined; macOS support is arm64-only. `os.tmpdir()` now strips
+Remaining differences: TLS trust is assembled from OpenSSL's configured paths
+plus the bundled/system CA files, not the macOS Keychain (Node uses bundled
+Mozilla roots, also not the Keychain); bad `NODE_EXTRA_CA_CERTS` warns and
+continues. FSEvents event coalescing and ordering are OS-defined; macOS support
+is arm64-only. `os.tmpdir()` now strips
 trailing separators like Node, and `/etc/hosts` was confirmed to work through
 `uv_getaddrinfo`.
 
