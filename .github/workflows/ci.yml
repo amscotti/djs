@@ -42,6 +42,9 @@ jobs:
       - name: Integration tests (builds --config=macos, runs dub test)
         run: ./scripts/integration.sh
 
+      - name: AddressSanitizer (LSan is Linux-only)
+        run: ./scripts/gate-sanitize.sh
+
       - name: Permission and network gates
         run: |
           ./scripts/gate-permissions.sh
@@ -52,6 +55,9 @@ jobs:
 
       - name: Differential against Node
         run: ./scripts/diff-node.sh
+
+      - name: Package (bundled dylibs) and verify the artifact
+        run: ./scripts/package.sh
 
   linux:
     runs-on: ubuntu-24.04

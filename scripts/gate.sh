@@ -28,12 +28,7 @@ step integration ./scripts/integration.sh
 step express ./scripts/gate-express.sh
 step examples ./scripts/gate-examples.sh
 step compat ./scripts/gate-compat.sh
-if [ "$DJS_PLAT" = "darwin" ]; then
-    printf 'sanitize skipped %s (macOS ASan config pending)\n' "$(date -u +%FT%TZ)" >> gates/sanitize.txt
-    echo "skip sanitize (macOS)"
-else
-    step sanitize ./scripts/gate-sanitize.sh
-fi
+step sanitize ./scripts/gate-sanitize.sh
 step net ./scripts/gate-net.sh
 if ./scripts/diff-node.sh >".dub/gate-diff.log" 2>&1; then
     if grep -q "skipped" ".dub/gate-diff.log"; then

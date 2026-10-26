@@ -10,7 +10,18 @@ log="$ROOT/.dub/sanitize-build.log"
 # Sanitizer flags live here rather than in dub.json: DUB warns about compiler
 # flags in a package description (`-g` is DUB's `--build=debug`), and DFLAGS
 # applies to this build only.
-if ! DFLAGS="-fsanitize=address" dub build --config=sanitize --build=debug --force >"$log" 2>&1; then
+SAN_CONFIG=sanitize
+# libuv's FSEvents thread and OpenSSL's provider/DRBG globals keep
+# process-lifetime allocations that LSan reports on exit, so macOS runs the
+# AddressSanitizer checks without leak detection. Linux runs both.
+DETECT_LEAKS=1
+DETECT_LABEL="asan+lsan"
+if [ "$DJS_PLAT" = "darwin" ]; then
+    SAN_CONFIG=sanitize-macos
+    DETECT_LEAKS=0
+    DETECT_LABEL="asan"
+fi
+if ! DFLAGS="-fsanitize=address" dub build --config="$SAN_CONFIG" --build=debug --force >"$log" 2>&1; then
     tail -20 "$log" >&2
     echo "gate-sanitize: build failed" >&2
     exit 1
@@ -25,7 +36,7 @@ cases=(hello fs_read fs_binary fs_buffers timers_clear microtasks microtask_thro
        immediate fs_cp_io builtin_new_modules meta_space fs_deep_rm memory_usage
        fs_promises_extra node_modules_test node_modules_import
        node_modules_exports node_modules_exports_esm
-       events_module stream_module url_util_module timers_clone_abort fs_streams fs_depth fs_depth_regress net_basic child_process child_async diagnostics_sse fork_ipc child_env tls_client_ca tls_mtls tls_alpn http2_tls cluster_basic process_stdio crypto zlib tls_fail node_compat node_partials http_keepalive https_server crypto_extra crypto_sign fs_watch dns_resolve fs_dir vm_basic web_streams websocket http2 fetch_headers fetch_stream buffer_full module_resolve stream_web_interop crypto_core http_upgrade blob_formdata fetch_decode webcrypto entry_scope upgrade_close dns_records assert_module stream_promises net_ipv6 child_limits fs_stream_chunks net_server http_server dgram worker_threads api_long_tail stream_consumers_readline
+       events_module stream_module url_util_module timers_clone_abort fs_streams fs_depth fs_depth_regress net_basic child_process child_async diagnostics_sse fork_ipc child_env tls_client_ca tls_mtls tls_alpn http2_tls cluster_basic process_stdio crypto zlib tls_fail node_compat node_partials http_keepalive https_server crypto_extra crypto_sign fs_watch fs_watch_many fs_watch_recursive fs_watch_unref memory_rss os_cpus os_tmpdir dns_resolve fs_dir vm_basic web_streams websocket http2 fetch_headers fetch_stream buffer_full module_resolve stream_web_interop crypto_core http_upgrade blob_formdata fetch_decode webcrypto entry_scope upgrade_close dns_records assert_module stream_promises net_ipv6 child_limits fs_stream_chunks net_server http_server dgram worker_threads api_long_tail stream_consumers_readline
        esm_modules v8_shim async_promises rejection_handled fs_unwatch fs_promises_surface dns_lookup_service dns_resolve_any)
 errors=0
 ran=0
@@ -44,7 +55,7 @@ for name in "${cases[@]}"; do
         continue
     fi
     ran=$((ran+1))
-    ASAN_OPTIONS=detect_leaks=1:exitcode=1 tmo 60 "$BIN" -A "$js" \
+    ASAN_OPTIONS=detect_leaks=$DETECT_LEAKS:exitcode=1 tmo 60 "$BIN" -A "$js" \
         >/dev/null 2>".dub/asan-$name.err"
     if grep -Eq 'ERROR: (Address|Leak)Sanitizer|SUMMARY: AddressSanitizer' ".dub/asan-$name.err"; then
         echo "gate-sanitize: FAIL $name" >&2
@@ -56,6 +67,6 @@ if [ "$errors" -ne 0 ]; then
     echo "gate-sanitize: $errors fixture(s) failed" >&2
     exit 1
 fi
-printf 'gate-sanitize ok %s cases=%d sanitizer=clean\n' \
-    "$(date -u +%FT%TZ)" "$ran" >> gates/sanitize.txt
+printf 'gate-sanitize ok %s cases=%d sanitizer=%s\n' \
+    "$(date -u +%FT%TZ)" "$ran" "$DETECT_LABEL" >> gates/sanitize.txt
 echo "gate-sanitize: ok ($ran cases)"
