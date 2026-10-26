@@ -36,10 +36,15 @@ command -v ninja >/dev/null || fail "ninja not found (apt install ninja-build)"
 command -v cc    >/dev/null || fail "cc not found"
 pkg-config --exists libuv || fail "libuv development files not found (apt install libuv1-dev)"
 
-LDC_VERSION="$(ldc2 --version 2>&1 | head -1)"
-DUB_VERSION="$(dub --version 2>&1 | head -1)"
-UV_VERSION="$(pkg-config --modversion libuv)"
-NINJA_VERSION="$(ninja --version)"
+# Capture full output and trim in the shell. Piping into `head -1` under
+# `set -o pipefail` can turn a closed pipe into a silent exit before the
+# diagnostics below are reached (seen on the GitHub Ubuntu runner).
+LDC_VERSION="$(ldc2 --version 2>&1)" || fail "ldc2 --version failed"
+LDC_VERSION="${LDC_VERSION%%$'\n'*}"
+DUB_VERSION="$(dub --version 2>&1)" || fail "dub --version failed"
+DUB_VERSION="${DUB_VERSION%%$'\n'*}"
+UV_VERSION="$(pkg-config --modversion libuv 2>&1)" || fail "pkg-config failed for libuv"
+NINJA_VERSION="$(ninja --version 2>&1)" || fail "ninja --version failed"
 
 check_pin() {
   local name="$1" actual="$2" want="$3"
