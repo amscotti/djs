@@ -1,0 +1,9 @@
+async-resource 5 number number
+async-local 42
+async-local-out undefined
+util-types true true true true
+console hello 42
+event-target 1
+message-port true true
+worker-marks true true
+sqlite ERR_SQLITE_UNSUPPORTED

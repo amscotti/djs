@@ -184,13 +184,18 @@ private static immutable string[] dns_promisesExports = ["lookup", "lookupServic
 private static immutable string[] httpExports = ["Agent", "ClientRequest", "IncomingMessage", "METHODS", "STATUS_CODES", "Server", "ServerResponse", "createServer", "get", "globalAgent", "maxHeaderSize", "request", "validateHeaderName", "validateHeaderValue"];
 private static immutable string[] httpsExports = ["Agent", "METHODS", "STATUS_CODES", "Server", "createServer", "get", "globalAgent", "request"];
 private static immutable string[] tlsExports = ["Server", "TLSSocket", "connect", "createServer"];
+private static immutable string[] async_hooksExports = ["AsyncLocalStorage", "AsyncResource", "createHook", "executionAsyncId", "executionAsyncResource", "triggerAsyncId"];
+private static immutable string[] util_typesExports = ["isAnyArrayBuffer", "isArrayBuffer", "isArrayBufferView", "isBigInt64Array", "isBigUint64Array", "isBoxedPrimitive", "isDataView", "isDate", "isFloat32Array", "isFloat64Array", "isInt16Array", "isInt32Array", "isInt8Array", "isKeyObject", "isMap", "isNativeError", "isPromise", "isProxy", "isRegExp", "isSet", "isTypedArray", "isUint16Array", "isUint32Array", "isUint8Array", "isUint8ClampedArray"];
+private static immutable string[] consoleExports = ["Console", "assert", "clear", "count", "countReset", "debug", "dir", "dirxml", "error", "group", "groupCollapsed", "groupEnd", "info", "log", "profile", "profileEnd", "table", "time", "timeEnd", "timeLog", "timeStamp", "trace", "warn"];
+private static immutable string[] sqliteExports = ["DatabaseSync", "StatementSync"];
+
 private static immutable string[] child_processExports = ["ChildProcess", "exec", "execFile", "execFileSync", "execSync", "fork", "spawn", "spawnSync"];
 private static immutable string[] cryptoExports = ["KeyObject", "X509Certificate", "createCipheriv", "createDecipheriv", "createHash", "createHmac", "createPrivateKey", "createPublicKey", "createSecretKey", "createSign", "createVerify", "generateKeyPair", "generateKeyPairSync", "getRandomValues", "hkdf", "hkdfSync", "pbkdf2", "pbkdf2Sync", "randomBytes", "randomFill", "randomFillSync", "randomUUID", "scrypt", "scryptSync", "sign", "subtle", "timingSafeEqual", "verify", "webcrypto"];
 private static immutable string[] zlibExports = ["brotliCompressSync", "brotliDecompressSync", "constants", "crc32", "createDeflate", "createDeflateRaw", "createGunzip", "createGzip", "createInflate", "createInflateRaw", "deflateRawSync", "deflateSync", "gunzipSync", "gzipSync", "inflateRawSync", "inflateSync"];
 private static immutable string[] dgramExports = ["createSocket"];
 private static immutable string[] readlineExports = ["clearLine", "clearScreenDown", "createInterface", "cursorTo", "moveCursor"];
 private static immutable string[] readline_promisesExports = ["createInterface"];
-private static immutable string[] worker_threadsExports = ["MessageChannel", "MessagePort", "Worker", "isMainThread", "parentPort", "threadId", "workerData"];
+private static immutable string[] worker_threadsExports = ["MessageChannel", "MessagePort", "Worker", "isMainThread", "parentPort", "threadId", "workerData", "markAsUncloneable", "markAsUntransferable"];
 private static immutable string[] ttyExports = ["isTTY", "isatty"];
 private static immutable string[] querystringExports = ["escape", "parse", "stringify", "unescape"];
 private static immutable string[] string_decoderExports = ["StringDecoder"];
@@ -232,6 +237,10 @@ private static immutable BuiltinFacade[] builtinFacades = [
     BuiltinFacade("djs:stream_web", stream_webExports, "globalThis.stream_web"),
     BuiltinFacade("djs:url", urlExports, "globalThis.url"),
     BuiltinFacade("djs:util", utilExports, "globalThis.util"),
+    BuiltinFacade("djs:util/types", util_typesExports, "globalThis.util.types"),
+    BuiltinFacade("djs:async_hooks", async_hooksExports, "globalThis.async_hooks"),
+    BuiltinFacade("djs:sqlite", sqliteExports, "globalThis.sqlite"),
+    BuiltinFacade("djs:console", consoleExports, "globalThis.console"),
     BuiltinFacade("djs:timers", timersExports, "globalThis.timers"),
     BuiltinFacade("djs:timers/promises", timers_promisesExports, "globalThis.timersPromises"),
     BuiltinFacade("djs:buffer", bufferExports, "globalThis.buffer"),

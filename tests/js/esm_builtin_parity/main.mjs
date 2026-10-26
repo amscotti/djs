@@ -7,13 +7,13 @@
 // src/djs/modules/esm.d).
 const mods = [
     'assert', 'assert/strict', 'buffer', 'child_process', 'cluster', 'crypto',
-    'dgram', 'diagnostics_channel', 'dns', 'dns/promises', 'events', 'fs',
+    'async_hooks', 'console', 'dgram', 'diagnostics_channel', 'dns', 'dns/promises', 'events', 'fs',
     'fs/promises', 'http', 'http2', 'https', 'module', 'net', 'os', 'path',
     'path/posix', 'path/win32',
     'perf_hooks', 'process', 'querystring', 'readline', 'readline/promises',
     'stream', 'stream/consumers', 'stream/promises', 'stream/web',
     'string_decoder', 'timers', 'timers/promises', 'tls', 'trace_events',
-    'tty', 'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib',
+    'tty', 'url', 'util', 'util/types', 'v8', 'vm', 'worker_threads', 'zlib',
 ];
 
 let bad = 0;

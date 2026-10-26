@@ -125,8 +125,24 @@
             isRegExp: function (v) { return v instanceof RegExp; },
             isPromise: function (v) { return v && typeof v.then === 'function'; },
             isArrayBuffer: function (v) { return v instanceof ArrayBuffer; },
-            isKeyObject: function (v) { return v instanceof KeyObject; },
+            isArrayBufferView: function (v) { return ArrayBuffer.isView(v); },
+            isAnyArrayBuffer: function (v) { return v instanceof ArrayBuffer; },
+            isTypedArray: function (v) {
+                return ArrayBuffer.isView(v) && !(v instanceof DataView);
+            },
+            isDataView: function (v) { return v instanceof DataView; },
             isUint8Array: function (v) { return v instanceof Uint8Array; },
+            isUint8ClampedArray: function (v) { return v instanceof Uint8ClampedArray; },
+            isInt8Array: function (v) { return v instanceof Int8Array; },
+            isUint16Array: function (v) { return v instanceof Uint16Array; },
+            isInt16Array: function (v) { return v instanceof Int16Array; },
+            isUint32Array: function (v) { return v instanceof Uint32Array; },
+            isInt32Array: function (v) { return v instanceof Int32Array; },
+            isFloat32Array: function (v) { return v instanceof Float32Array; },
+            isFloat64Array: function (v) { return v instanceof Float64Array; },
+            isBigInt64Array: function (v) { return typeof BigInt64Array === 'function' && v instanceof BigInt64Array; },
+            isBigUint64Array: function (v) { return typeof BigUint64Array === 'function' && v instanceof BigUint64Array; },
+            isKeyObject: function (v) { return v instanceof KeyObject; },
             isProxy: function (v) { return __djs.process.isProxy(v); },
             isMap: function (v) { return v instanceof Map; },
             isSet: function (v) { return v instanceof Set; },
@@ -445,6 +461,263 @@
     g.URL = URL;
     g.URLSearchParams = URLSearchParams;
     g.util = utilModule;
+    g.util_types = utilModule.types;
+
+    // Minimal DOM event globals used by undici's WebSocket/EventSource
+    // classes. This covers dispatch/propagation shape; it is not a full DOM.
+    function Event(type, init) {
+        init = init || {};
+        this.type = String(type);
+        this.bubbles = !!init.bubbles;
+        this.cancelable = !!init.cancelable;
+        this.composed = !!init.composed;
+        this.defaultPrevented = false;
+        this.target = null;
+        this.currentTarget = null;
+        this.eventPhase = 0;
+        this.timeStamp = Date.now();
+        this.isTrusted = false;
+        this._stop = false;
+        this._stopImmediate = false;
+    }
+    Event.NONE = 0;
+    Event.CAPTURING_PHASE = 1;
+    Event.AT_TARGET = 2;
+    Event.BUBBLING_PHASE = 3;
+    Event.prototype.preventDefault = function () {
+        if (this.cancelable) this.defaultPrevented = true;
+    };
+    Event.prototype.stopPropagation = function () { this._stop = true; };
+    Event.prototype.stopImmediatePropagation = function () {
+        this._stop = true;
+        this._stopImmediate = true;
+    };
+    Event.prototype.composedPath = function () { return this.currentTarget ? [this.currentTarget] : []; };
+
+    function EventTarget() { this._listeners = Object.create(null); }
+    EventTarget.prototype.addEventListener = function (type, fn, options) {
+        if (typeof fn !== 'function' && (fn === null || typeof fn.handleEvent !== 'function'))
+            return;
+        var key = String(type);
+        var list = this._listeners[key] || (this._listeners[key] = []);
+        var once = !!(options && typeof options === 'object' && options.once);
+        for (var i = 0; i < list.length; i++)
+            if (list[i].fn === fn && list[i].capture === !!(options && options.capture)) return;
+        list.push({ fn: fn, once: once, capture: !!(options && options.capture) });
+    };
+    EventTarget.prototype.removeEventListener = function (type, fn, options) {
+        var list = this._listeners[String(type)];
+        if (!list) return;
+        var capture = !!(options && options.capture);
+        for (var i = 0; i < list.length; i++)
+            if (list[i].fn === fn && list[i].capture === capture) { list.splice(i, 1); return; }
+    };
+    EventTarget.prototype.dispatchEvent = function (event) {
+        if (!(event instanceof Event)) throw new TypeError('argument must be an Event');
+        event.target = this;
+        event.currentTarget = this;
+        event.eventPhase = Event.AT_TARGET;
+        var list = (this._listeners[event.type] || []).slice();
+        for (var i = 0; i < list.length && !event._stopImmediate; i++) {
+            var entry = list[i];
+            if (entry.once) this.removeEventListener(event.type, entry.fn, { capture: entry.capture });
+            try {
+                if (typeof entry.fn === 'function') entry.fn.call(this, event);
+                else entry.fn.handleEvent(event);
+            } catch (e) {
+                // Match the browser: report and continue dispatching.
+                if (typeof console !== 'undefined' && console.error) console.error(e);
+            }
+            if (event._stop) break;
+        }
+        event.currentTarget = null;
+        return !event.defaultPrevented;
+    };
+    g.Event = Event;
+    g.EventTarget = EventTarget;
+
+    // Node exposes MessagePort/MessageChannel globally. Workers are not
+    // implemented, but libraries (undici's WebIDL layer) reference the
+    // constructors at module load; keep them as inert classes.
+    function MessagePort() {}
+    MessagePort.prototype.postMessage = function () {};
+    MessagePort.prototype.start = function () {};
+    MessagePort.prototype.close = function () {};
+    MessagePort.prototype.unref = function () { return this; };
+    MessagePort.prototype.ref = function () { return this; };
+    function MessageChannel() {
+        this.port1 = new MessagePort();
+        this.port2 = new MessagePort();
+    }
+    g.MessagePort = MessagePort;
+    g.MessageChannel = MessageChannel;
+
+
+    // node:console. The global console is a plain writer; undici's mock
+    // formatter constructs a Console over a Transform stream and calls
+    // table(), so provide a small Console class with stream output.
+    function Console(options) {
+        options = options || {};
+        this._stdout = options.stdout || null;
+        this._stderr = options.stderr || null;
+    }
+    function consoleEmit(stream, fallback, args) {
+        var text = args.length ? utilModule.format.apply(null, args) : '';
+        if (stream && typeof stream.write === 'function') stream.write(text + '\n');
+        else fallback(text);
+    }
+    Console.prototype.log = function () { consoleEmit(this._stdout, consoleObj.log, arguments); };
+    Console.prototype.info = Console.prototype.log;
+    Console.prototype.debug = Console.prototype.log;
+    Console.prototype.error = function () { consoleEmit(this._stderr, consoleObj.error, arguments); };
+    Console.prototype.warn = Console.prototype.error;
+    Console.prototype.dir = Console.prototype.log;
+    Console.prototype.trace = Console.prototype.error;
+    Console.prototype.assert = function (cond) {
+        if (cond) return;
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (!args.length) args = ['Assertion failed'];
+        Console.prototype.error.apply(this, args);
+    };
+    Console.prototype.table = function (data) {
+        try { this.log(JSON.stringify(data)); } catch (e) { this.log(String(data)); }
+    };
+    Console.prototype.group = Console.prototype.log;
+    Console.prototype.groupCollapsed = Console.prototype.log;
+    Console.prototype.groupEnd = function () {};
+    Console.prototype.time = function () {};
+    Console.prototype.timeEnd = function () {};
+    Console.prototype.count = function () {};
+    Console.prototype.countReset = function () {};
+    Console.prototype.clear = function () {};
+    Console.prototype.timeLog = function () {};
+    Console.prototype.timeStamp = function () {};
+    Console.prototype.profile = function () {};
+    Console.prototype.profileEnd = function () {};
+    Console.prototype.dirxml = Console.prototype.log;
+    Console.prototype.trace = function () {
+        var e = new Error('Trace');
+        Console.prototype.error.call(this, e.stack || String(e));
+    };
+    Console.prototype.assert = function (cond) {
+        if (cond) return;
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (!args.length) args = ['Assertion failed'];
+        Console.prototype.error.apply(this, args);
+    };
+    consoleObj.Console = Console;
+    consoleObj.table = function (data) { consoleObj.log(JSON.stringify(data)); };
+    consoleObj.dir = consoleObj.log;
+    consoleObj.dirxml = consoleObj.log;
+    consoleObj.group = consoleObj.log;
+    consoleObj.groupCollapsed = consoleObj.log;
+    consoleObj.groupEnd = function () {};
+    consoleObj.time = function () {};
+    consoleObj.timeEnd = function () {};
+    consoleObj.timeLog = function () {};
+    consoleObj.timeStamp = function () {};
+    consoleObj.count = function () {};
+    consoleObj.countReset = function () {};
+    consoleObj.profile = function () {};
+    consoleObj.profileEnd = function () {};
+    consoleObj.clear = function () {};
+    consoleObj.assert = function (cond) {
+        if (!cond) consoleObj.error.apply(null, Array.prototype.slice.call(arguments, 1));
+    };
+    consoleObj.trace = function () {
+        var e = new Error('Trace');
+        consoleObj.error(e.stack || String(e));
+    };
+
+
+    // ---- async_hooks compatibility ------------------------------------
+    // QuickJS-ng has no async-context propagation across await, so this is
+    // deliberately a compatibility surface, not full async_hooks: callbacks
+    // and resources are correct synchronously, while AsyncLocalStorage does
+    // not survive an await boundary. undici only needs AsyncResource.
+    var asyncHooksModule = (function () {
+        var nextId = 1;
+        function AsyncResource(type, opts) {
+            opts = opts || {};
+            this.type = typeof type === 'string' ? type : 'AsyncResource';
+            this._asyncId = nextId++;
+            this._triggerAsyncId = opts.triggerAsyncId === undefined ? 0 : opts.triggerAsyncId;
+            this._destroyed = false;
+        }
+        AsyncResource.prototype.runInAsyncScope = function (fn, thisArg) {
+            var args = Array.prototype.slice.call(arguments, 2);
+            return fn.apply(thisArg, args);
+        };
+        AsyncResource.prototype.emitDestroy = function () {
+            this._destroyed = true;
+            return this;
+        };
+        AsyncResource.prototype.asyncId = function () { return this._asyncId; };
+        AsyncResource.prototype.triggerAsyncId = function () { return this._triggerAsyncId; };
+        AsyncResource.prototype.bind = function (fn, thisArg) {
+            var self = this;
+            return function () {
+                return self.runInAsyncScope(fn, thisArg === undefined ? this : thisArg, arguments);
+            };
+        };
+        AsyncResource.bind = function (fn, type, thisArg) {
+            var res = new AsyncResource(typeof type === 'string' ? type : 'bound');
+            return res.bind(fn, thisArg);
+        };
+        function AsyncLocalStorage() { this._store = undefined; }
+        AsyncLocalStorage.prototype.run = function (store, fn) {
+            var args = Array.prototype.slice.call(arguments, 2);
+            var prev = this._store;
+            this._store = store;
+            try { return fn.apply(undefined, args); }
+            finally { this._store = prev; }
+        };
+        AsyncLocalStorage.prototype.exit = function (fn) {
+            var args = Array.prototype.slice.call(arguments, 1);
+            var prev = this._store;
+            this._store = undefined;
+            try { return fn.apply(undefined, args); }
+            finally { this._store = prev; }
+        };
+        AsyncLocalStorage.prototype.getStore = function () { return this._store; };
+        AsyncLocalStorage.prototype.enterWith = function (store) { this._store = store; };
+        AsyncLocalStorage.prototype.disable = function () { this._store = undefined; };
+        AsyncLocalStorage.bind = function (fn, type) {
+            var res = new AsyncResource(typeof type === 'string' ? type : 'bound');
+            return res.bind(fn);
+        };
+        AsyncLocalStorage.snapshot = function () {
+            return function (fn) {
+                return fn.apply(undefined, Array.prototype.slice.call(arguments, 1));
+            };
+        };
+        function createHook() {
+            return { enable: function () {}, disable: function () {} };
+        }
+        return {
+            AsyncResource: AsyncResource,
+            AsyncLocalStorage: AsyncLocalStorage,
+            createHook: createHook,
+            executionAsyncId: function () { return 0; },
+            triggerAsyncId: function () { return 0; },
+            executionAsyncResource: function () { return {}; }
+        };
+    })();
+    g.async_hooks = asyncHooksModule;
+
+    // undici requires node:sqlite only when a SqliteCacheStore is actually
+    // constructed; loading the module is supported, using it fails clearly.
+    function DatabaseSync() {
+        var e = new Error('node:sqlite is not supported by DJS');
+        e.code = 'ERR_SQLITE_UNSUPPORTED';
+        throw e;
+    }
+    function StatementSync() {
+        var e = new Error('node:sqlite is not supported by DJS');
+        e.code = 'ERR_SQLITE_UNSUPPORTED';
+        throw e;
+    }
+    g.sqlite = { DatabaseSync: DatabaseSync, StatementSync: StatementSync };
     g.timersPromises = timersPromises;
     g.AbortController = AbortController;
     g.AbortSignal = AbortSignal;

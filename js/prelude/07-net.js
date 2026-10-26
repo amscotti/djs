@@ -1561,7 +1561,9 @@
         parentPort: parentPort,
         Worker: WorkerThread,
         MessagePort: WorkerMessagePort,
-        MessageChannel: WorkerMessageChannel
+        MessageChannel: WorkerMessageChannel,
+        markAsUncloneable: function (value) { return value; },
+        markAsUntransferable: function (value) { return value; }
     };
     var nextWorkerThreadId = 0;
 

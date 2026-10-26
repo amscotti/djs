@@ -92,6 +92,14 @@ private JSValue builtinValue(JSContext* ctx, const(char)* builtin) @nogc nothrow
         result = JS_GetPropertyStr(ctx, global, "url");
     else if (!strcmp(builtin, "djs:util"))
         result = JS_GetPropertyStr(ctx, global, "util");
+    else if (!strcmp(builtin, "djs:util/types"))
+        result = JS_GetPropertyStr(ctx, global, "util_types");
+    else if (!strcmp(builtin, "djs:async_hooks"))
+        result = JS_GetPropertyStr(ctx, global, "async_hooks");
+    else if (!strcmp(builtin, "djs:sqlite"))
+        result = JS_GetPropertyStr(ctx, global, "sqlite");
+    else if (!strcmp(builtin, "djs:console"))
+        result = JS_GetPropertyStr(ctx, global, "console");
     else if (!strcmp(builtin, "djs:timers/promises"))
         result = JS_GetPropertyStr(ctx, global, "timersPromises");
     else if (!strcmp(builtin, "djs:buffer"))

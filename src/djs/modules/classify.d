@@ -40,6 +40,10 @@ const(char)* builtinAlias(const(char)* spec) @nogc nothrow
         case "stream", "node:stream": return "djs:stream";
         case "url", "node:url": return "djs:url";
         case "util", "node:util": return "djs:util";
+        case "util/types", "node:util/types": return "djs:util/types";
+        case "async_hooks", "node:async_hooks": return "djs:async_hooks";
+        case "sqlite", "node:sqlite": return "djs:sqlite";
+        case "console", "node:console": return "djs:console";
         case "v8", "node:v8": return "djs:v8";
         case "timers/promises", "node:timers/promises": return "djs:timers/promises";
         case "buffer", "node:buffer": return "djs:buffer";

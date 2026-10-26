@@ -4,7 +4,8 @@
         'dns/promises', 'events', 'fs', 'fs/promises', 'http', 'http2', 'https', 'module', 'net', 'os',
         'path', 'path/posix', 'path/win32', 'perf_hooks', 'process', 'querystring', 'readline', 'stream',
         'stream/promises', 'stream/web', 'string_decoder', 'timers', 'timers/promises',
-        'tls', 'tty', 'url', 'util', 'v8', 'vm', 'worker_threads', 'zlib'
+        'tls', 'tty', 'url', 'util', 'util/types', 'v8', 'vm', 'worker_threads', 'zlib',
+        'async_hooks', 'sqlite', 'console'
     ];
     function moduleIsBuiltin(name) {
         if (typeof name !== 'string') return false;
@@ -113,6 +114,10 @@
     g.worker_threads = {
         isMainThread: true,
         threadId: 0,
+        markAsUncloneable: function (value) { return value; },
+        markAsUntransferable: function (value) { return value; },
+        MessagePort: MessagePort,
+        MessageChannel: MessageChannel,
         Worker: function () {
             var e = new Error('worker_threads is not implemented; the runtime is single-threaded by design');
             e.code = 'ERR_WORKER_THREADS_UNSUPPORTED';
