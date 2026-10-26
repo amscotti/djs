@@ -10,9 +10,9 @@ import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.sys.stat : umask;
 import core.sys.posix.unistd : getcwd, getpid, getppid;
 
-import djs.platform : CLOCK_MONOTONIC, Mode, clock_gettime, environPtr, peakRssBytes;
+import djs.platform : CLOCK_MONOTONIC, Mode, clock_gettime, environPtr;
 
-import djs.loop.libuv : uv_version_string;
+import djs.loop.libuv : uv_resident_set_memory, uv_version_string;
 import djs.bindings.quickjs;
 import djs.bindings.value;
 import djs.permissions : Perm, permissionHas, permissionCheck, permissionFromName, permissionThrow, permissionsRevoke;
@@ -127,43 +127,12 @@ private JSValue processCwd(JSContext* ctx) @nogc nothrow
 
 private long readRss() @nogc nothrow
 {
-    version (linux)
-    {
-        import core.sys.posix.fcntl : O_RDONLY, open;
-        import core.sys.posix.unistd : close, read;
-        int fd = open("/proc/self/statm", O_RDONLY);
-        if (fd < 0)
-            return 0;
-        char[128] buf = void;
-        ptrdiff_t n = read(fd, buf.ptr, buf.length - 1);
-        close(fd);
-        if (n <= 0)
-            return 0;
-        buf[n] = 0;
-        // The second field is resident pages.
-        size_t i = 0;
-        while (i < cast(size_t) n && buf[i] != ' ')
-            i += 1;
-        while (i < cast(size_t) n && buf[i] == ' ')
-            i += 1;
-        long pages = 0;
-        while (i < cast(size_t) n && buf[i] >= '0' && buf[i] <= '9')
-        {
-            pages = pages * 10 + (buf[i] - '0');
-            i += 1;
-        }
-        return pages * 4096;
-    }
-    else version (OSX)
-    {
-        // Darwin reports peak RSS in bytes; Node reports current RSS, so this
-        // is an over-estimate on a long-lived process. Better than zero.
-        return peakRssBytes();
-    }
-    else
-    {
+    // libuv reports the current resident set size: /proc on Linux, task_info
+    // on Darwin. This is the same call Node uses for process.memoryUsage().
+    size_t rss = 0;
+    if (uv_resident_set_memory(&rss) != 0)
         return 0;
-    }
+    return cast(long) rss;
 }
 
 private JSValue processMemoryUsage(JSContext* ctx, Runtime* self) @nogc nothrow

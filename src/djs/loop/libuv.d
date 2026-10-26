@@ -140,6 +140,25 @@ int uv_fs_event_start(uv_fs_event_t* handle, uv_fs_event_cb cb,
                       const(char)* path, int flags) nothrow @nogc;
 int uv_fs_event_stop(uv_fs_event_t* handle) nothrow @nogc;
 
+// uv_cpu_info_t: char* model; int speed; five uint64 times. libuv allocates
+// the array and the model strings; uv_free_cpu_info releases them.
+struct uv_cpu_times_t
+{
+    ulong user;
+    ulong nice;
+    ulong sys;
+    ulong idle;
+    ulong irq;
+}
+struct uv_cpu_info_t
+{
+    char* model;
+    int speed;
+    uv_cpu_times_t cpu_times;
+}
+int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) nothrow @nogc;
+void uv_free_cpu_info(uv_cpu_info_t* cpu_infos, int count) nothrow @nogc;
+
 int uv_poll_init_socket(uv_loop_t* loop, uv_poll_t* handle, int socket) nothrow @nogc;
 int uv_poll_start(uv_poll_t* handle, int events, uv_poll_cb cb) nothrow @nogc;
 int uv_poll_stop(uv_poll_t* handle) nothrow @nogc;
@@ -151,6 +170,7 @@ int uv_cancel(uv_req_t* req) nothrow @nogc;
 const(char)* uv_strerror(int err) nothrow @nogc;
 const(char)* uv_err_name(int err) nothrow @nogc;
 int uv_translate_sys_error(int sysErrno) nothrow @nogc;
+int uv_resident_set_memory(size_t* rss) nothrow @nogc;
 ulong uv_hrtime() nothrow @nogc;
 ulong uv_now(const uv_loop_t* loop) nothrow @nogc;
 const(char)* uv_version_string() nothrow @nogc;

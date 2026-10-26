@@ -1,0 +1,5 @@
+cpus-count true
+cpus-model true
+cpus-speed true
+cpus-times true
+cpus-idle true

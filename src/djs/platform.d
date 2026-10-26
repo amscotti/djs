@@ -65,32 +65,3 @@ else
         return null;
     }
 }
-
-// Resident set size of the current process, in bytes.
-//
-// Darwin's druntime rusage keeps `ru_maxrss` (the first word of the kernel's
-// rusage tail) in `ru_opaque` instead of a named field; newer druntimes may
-// name it. This reports peak RSS on Darwin, matching the documented behaviour
-// in README ("rss reports peak RSS on macOS").
-long peakRssBytes() @trusted @nogc nothrow
-{
-    version (OSX)
-    {
-        import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
-        rusage ru = void;
-        if (getrusage(RUSAGE_SELF, &ru) != 0)
-            return 0;
-        static if (__traits(hasMember, rusage, "ru_maxrss"))
-            return cast(long) ru.ru_maxrss;
-        else
-            return cast(long) ru.ru_opaque[0];
-    }
-    else version (linux)
-    {
-        // Linux reads /proc/self/statm for current RSS; this helper exists
-        // only for the Darwin branch.
-        return 0;
-    }
-    else
-        return 0;
-}

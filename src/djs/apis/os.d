@@ -7,6 +7,7 @@ import core.sys.posix.pwd : passwd, getpwuid_r;
 import core.sys.posix.time : timespec;
 
 import djs.platform : CLOCK_MONOTONIC, clock_gettime;
+import djs.loop.libuv;
 import core.sys.posix.arpa.inet : inet_ntop;
 import core.sys.posix.netinet.in_ : AF_INET, AF_INET6, sockaddr_in, sockaddr_in6;
 import core.sys.posix.sys.socket : sockaddr;
@@ -74,6 +75,53 @@ private extern(C) JSValue jsOsCpusImpl(JSContext* ctx, JSValueConst, int,
 {
     if (!permissionCheck(Perm.sys, "cpus"))
         return permissionThrow(ctx, Perm.sys, "cpus");
+    uv_cpu_info_t* infos = null;
+    int count = 0;
+    if (uv_cpu_info(&infos, &count) != 0 || infos is null || count <= 0)
+        return syntheticCpus(ctx);
+    int total = count;
+    scope(exit) uv_free_cpu_info(infos, total);
+    if (count > 1024) count = 1024;
+    JSValue arr = JS_NewArray(ctx);
+    if (jsIsException(arr))
+        return arr;
+    for (int i = 0; i < count; ++i)
+    {
+        JSValue cpu = JS_NewObject(ctx);
+        if (jsIsException(cpu))
+        {
+            JS_FreeValue(ctx, arr);
+            return cpu;
+        }
+        setProp(ctx, cpu, "model",
+                newString(ctx, infos[i].model !is null ? infos[i].model : ""));
+        setProp(ctx, cpu, "speed", jsInt(infos[i].speed));
+        JSValue times = JS_NewObject(ctx);
+        if (jsIsException(times))
+        {
+            JS_FreeValue(ctx, cpu);
+            JS_FreeValue(ctx, arr);
+            return times;
+        }
+        setProp(ctx, times, "user", jsFloat(cast(double) infos[i].cpu_times.user));
+        setProp(ctx, times, "nice", jsFloat(cast(double) infos[i].cpu_times.nice));
+        setProp(ctx, times, "sys", jsFloat(cast(double) infos[i].cpu_times.sys));
+        setProp(ctx, times, "idle", jsFloat(cast(double) infos[i].cpu_times.idle));
+        setProp(ctx, times, "irq", jsFloat(cast(double) infos[i].cpu_times.irq));
+        setProp(ctx, cpu, "times", times);
+        if (!setIndex(ctx, arr, cast(uint) i, cpu))
+        {
+            JS_FreeValue(ctx, arr);
+            return jsException();
+        }
+    }
+    return arr;
+}
+
+// Fallback for an unexpected uv_cpu_info failure: preserve the old shape
+// rather than returning an empty array.
+private JSValue syntheticCpus(JSContext* ctx) @nogc nothrow
+{
     long n = sysconfLong(SC_NPROCESSORS_ONLN);
     if (n <= 0) n = 1;
     if (n > 1024) n = 1024;
@@ -232,6 +280,19 @@ private extern(C) JSValue jsOsRelease(JSContext* ctx, JSValueConst thisVal, int 
     return guarded!jsOsReleaseImpl(ctx, thisVal, argc, argv);
 }
 
+private JSValue tmpdirValue(JSContext* ctx, const(char)* value) @nogc nothrow
+{
+    // Node removes exactly one trailing separator and falls back to /tmp for
+    // an empty TMPDIR. macOS sets TMPDIR with one trailing slash; Linux
+    // normally does not.
+    if (value[0] == 0)
+        value = "/tmp";
+    size_t n = strlen(value);
+    if (n > 1 && value[n - 1] == '/')
+        n -= 1;
+    return JS_NewStringLen(ctx, value, n);
+}
+
 private extern(C) JSValue jsOsTmpdirImpl(JSContext* ctx, JSValueConst, int,
                                          JSValueConst*) nothrow @nogc
 {
@@ -239,7 +300,7 @@ private extern(C) JSValue jsOsTmpdirImpl(JSContext* ctx, JSValueConst, int,
     // on every defensive library's startup path.
     if (!permissionHas(Perm.env, "TMPDIR"))
         return newString(ctx, "/tmp");
-    return newString(ctx, envOr("TMPDIR", "/tmp"));
+    return tmpdirValue(ctx, envOr("TMPDIR", "/tmp"));
 }
 
 private extern(C) JSValue jsOsTmpdir(JSContext* ctx, JSValueConst thisVal, int argc,
