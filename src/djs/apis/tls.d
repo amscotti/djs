@@ -170,8 +170,9 @@ private void loadCaFallbacks(void* st) @nogc nothrow
 
 private void buildCaStore(Runtime* self) @nogc nothrow
 {
-    if (self is null || self.tlsCaStore !is null)
+    if (self is null || self.tlsCaBuilt)
         return;
+    self.tlsCaBuilt = true;
     void* st = X509_STORE_new();
     if (st is null)
         return; // connections fall back to per-context default paths
@@ -700,10 +701,11 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
 
 private extern(C) void tlsHandleClose(uv_handle_t* h) nothrow @nogc { free(h); }
 
-private TlsSock* findSock(uint id) @nogc nothrow
+private TlsSock* findSock(Runtime* rt, uint id) @nogc nothrow
 {
+    if (rt is null) return null;
     foreach (ref s; socks)
-        if (s.used && s.id == id)
+        if (s.used && s.rt is rt && s.id == id)
             return &s;
     return null;
 }
@@ -989,6 +991,10 @@ private extern(C) JSValue jsTlsConnectImpl(JSContext* ctx, JSValueConst, int arg
     }
     j.caFile = caOpt; j.certFile = certOpt; j.keyFile = keyOpt; j.alpn = alpnOpt;
     j.rt = rt;
+    // First TLS use, on the main thread: load the CA store lazily so a
+    // non-TLS process pays nothing and a bad NODE_EXTRA_CA_CERTS warns only
+    // when TLS is actually used (Node does the same).
+    buildCaStore(rt);
     j.caStore = rt.tlsCaStore;
     j.port = port;
     j.verify = JS_ToBool(ctx, argv[3]) > 0;
@@ -1024,7 +1030,8 @@ private extern(C) JSValue jsTlsPeerAuthorizedImpl(JSContext* ctx, JSValueConst, 
 {
     int rawId = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &rawId)) return jsBool(false);
-    TlsSock* s = findSock(cast(uint) rawId);
+    Runtime* rt = runtimeOf(ctx);
+    TlsSock* s = findSock(rt, cast(uint) rawId);
     if (s is null || s.ssl is null) return jsBool(false);
     if (SSL_get_verify_result(s.ssl) != 0) return jsBool(false);
     void* cert = SSL_get1_peer_certificate(s.ssl);
@@ -1039,7 +1046,8 @@ private extern(C) JSValue jsTlsAlpnImpl(JSContext* ctx, JSValueConst, int argc, 
 {
     int rawId = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &rawId)) return jsNull();
-    TlsSock* s = findSock(cast(uint) rawId);
+    Runtime* rt = runtimeOf(ctx);
+    TlsSock* s = findSock(rt, cast(uint) rawId);
     if (s is null || s.ssl is null) return jsNull();
     const(ubyte)* data = null;
     uint len = 0;
@@ -1056,7 +1064,8 @@ private extern(C) JSValue jsTlsStartReadImpl(JSContext* ctx, JSValueConst, int a
     int rawId = 0;
     if (argc < 2 || !toInt32(ctx, argv[0], &rawId) || !JS_IsFunction(ctx, argv[1]))
         return throwTypeError(ctx, "tls.startRead requires (id, callback)");
-    TlsSock* s = findSock(cast(uint) rawId);
+    Runtime* rt = runtimeOf(ctx);
+    TlsSock* s = findSock(rt, cast(uint) rawId);
     if (s is null) return throwTypeError(ctx, "invalid TLS handle");
     if (s.readCb != 0) registryRelease(ctx, &s.rt.registry, s.readCb);
     s.readCb = registryAdd(ctx, &s.rt.registry, argv[1], null);
@@ -1071,7 +1080,8 @@ private extern(C) JSValue jsTlsWriteImpl(JSContext* ctx, JSValueConst, int argc,
     int rawId = 0;
     if (argc < 2 || !toInt32(ctx, argv[0], &rawId))
         return throwTypeError(ctx, "tls.write requires (id, data)");
-    TlsSock* s = findSock(cast(uint) rawId);
+    Runtime* rt = runtimeOf(ctx);
+    TlsSock* s = findSock(rt, cast(uint) rawId);
     if (s is null) return throwTypeError(ctx, "invalid TLS handle");
     const(char)* cstr = null;
     const(ubyte)* data = null;
@@ -1141,7 +1151,8 @@ private extern(C) JSValue jsTlsEndImpl(JSContext* ctx, JSValueConst, int argc,
     int rawId = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &rawId))
         return throwTypeError(ctx, "tls.end requires an id");
-    TlsSock* s = findSock(cast(uint) rawId);
+    Runtime* rt = runtimeOf(ctx);
+    TlsSock* s = findSock(rt, cast(uint) rawId);
     if (s is null) return jsUndefined();
     flushWrites(s);
     if (s.wbuf is null) SSL_shutdown(s.ssl);
@@ -1156,7 +1167,8 @@ private extern(C) JSValue jsTlsCloseImpl(JSContext* ctx, JSValueConst, int argc,
     int rawId = 0;
     if (argc < 1 || !toInt32(ctx, argv[0], &rawId))
         return throwTypeError(ctx, "tls.close requires an id");
-    TlsSock* s = findSock(cast(uint) rawId);
+    Runtime* rt = runtimeOf(ctx);
+    TlsSock* s = findSock(rt, cast(uint) rawId);
     if (s !is null) releaseSock(s);
     return jsUndefined();
 }
@@ -1322,8 +1334,6 @@ extern(C) JSValue jsAcceptFd(JSContext* ctx, JSValueConst thisVal, int argc, JSV
 
 bool installTls(Runtime* self, JSValueConst djs) @nogc nothrow
 {
-    // Before the loop starts (single-threaded): build this runtime's CA store.
-    buildCaStore(self);
     JSContext* ctx = self.ctx;
     JSValue obj = JS_NewObject(ctx);
     if (jsIsException(obj)) return false;

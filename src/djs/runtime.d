@@ -78,8 +78,9 @@ struct Runtime
     CallbackRegistry registry;
 
     // X509_STORE* owned by this runtime (void* keeps tls.d types out of
-    // runtime.d). Built once before the loop starts.
+    // runtime.d). Built lazily on the first TLS connection.
     void* tlsCaStore;
+    bool tlsCaBuilt;
 
     bool prepareStarted;
     bool idleActive;
