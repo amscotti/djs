@@ -1,4 +1,4 @@
-overnight mac ok 2026-10-26T03:01:31Z hours=8 cycles=663 fails=53
+overnight mac fail 2026-10-26T03:01:31Z hours=8 cycles=663 fails=53
 overnight linux ok 2026-10-26T03:01:32Z hours=8 cycles=704 fails=0
 
 8-hour stress run of scripts/overnight-stress.sh on both platforms (branch
