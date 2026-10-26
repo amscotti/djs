@@ -8,7 +8,7 @@ module djs.apis.tls;
 
 import core.stdc.errno : EINPROGRESS, EINTR, errno;
 import core.sys.posix.fcntl : F_GETFL, F_SETFL, O_NONBLOCK, fcntl;
-import core.stdc.stdlib : free, malloc;
+import core.stdc.stdlib : free, getenv, malloc;
 import core.stdc.string : memcmp, memcpy, strlen;
 import core.sys.posix.netdb : addrinfo, freeaddrinfo, getaddrinfo;
 import core.sys.posix.poll : POLLIN, POLLOUT, poll, pollfd;
@@ -241,7 +241,20 @@ private extern(C) void tlsWork(uv_work_t* req) nothrow @nogc
             }
         }
         else
+        {
             SSL_CTX_set_default_verify_paths(ctx);
+            // Node's additive trust extension. The file is loaded into the
+            // default store, so public CAs stay trusted. SSL_CERT_FILE and
+            // SSL_CERT_DIR are already honoured by OpenSSL's default paths.
+            const(char)* extra = getenv("NODE_EXTRA_CA_CERTS");
+            if (extra !is null && extra[0] != 0 &&
+                SSL_CTX_load_verify_locations(ctx, extra, null) != 1)
+            {
+                setMsg(j, "could not load NODE_EXTRA_CA_CERTS");
+                j.err = 1;
+                return;
+            }
+        }
     }
     if (j.certFile !is null || j.keyFile !is null)
     {

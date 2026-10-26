@@ -241,14 +241,32 @@ fi
 # self-signed, so verification must fail while rejectUnauthorized:false works.
 tlsDir="$TMP/tls"
 mkdir -p "$tlsDir"
+# SANs make the trusted-CA path testable: IP for the client connection and DNS
+# for tools that use localhost. Written as a config file because macOS ships
+# LibreSSL, whose req(1) lacks -addext.
+cat > "$tlsDir/req.cnf" <<'EOF'
+[req]
+distinguished_name = dn
+x509_extensions = v3
+prompt = no
+[dn]
+CN = localhost
+[v3]
+subjectAltName = DNS:localhost,IP:127.0.0.1
+EOF
 if openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/key.pem" -out "$tlsDir/cert.pem" \
-        -days 1 -nodes -subj "/CN=localhost" >/dev/null 2>&1; then
+        -days 1 -nodes -config "$tlsDir/req.cnf" >/dev/null 2>&1; then
     tlsPort=$((18443 + RANDOM % 1000))
     openssl s_server -accept "$tlsPort" -cert "$tlsDir/cert.pem" -key "$tlsDir/key.pem" \
         -www -quiet >/dev/null 2>&1 &
     tlsPid=$!
     sleep 0.5
     tlsOut="$("$BIN" -A tests/js/fixtures/tls_client.js "$tlsPort" 2>&1)"
+    tlsExtra="$(NODE_EXTRA_CA_CERTS="$tlsDir/cert.pem" "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPort" 2>&1)"
+    tlsNoExtra="$("$BIN" -A tests/js/fixtures/tls_extra_ca.js "$tlsPort" 2>&1)"
+    tlsSslFile="$(SSL_CERT_FILE="$tlsDir/cert.pem" "$BIN" -A \
+        tests/js/fixtures/tls_extra_ca.js "$tlsPort" 2>&1)"
     kill "$tlsPid" 2>/dev/null
     wait "$tlsPid" 2>/dev/null
     if printf '%s' "$tlsOut" | grep -q "https 200 true" &&
@@ -258,6 +276,24 @@ if openssl req -x509 -newkey rsa:2048 -keyout "$tlsDir/key.pem" -out "$tlsDir/ce
     else
         bad "tls-https"
         printf '%s\n' "$tlsOut" >&2
+    fi
+    if printf '%s' "$tlsExtra" | grep -q "extra-ca 200 true"; then
+        ok "tls-extra-ca"
+    else
+        bad "tls-extra-ca"
+        printf '%s\n' "$tlsExtra" >&2
+    fi
+    if printf '%s' "$tlsNoExtra" | grep -q "extra-ca-err"; then
+        ok "tls-extra-ca-not-default"
+    else
+        bad "tls-extra-ca-not-default"
+        printf '%s\n' "$tlsNoExtra" >&2
+    fi
+    if printf '%s' "$tlsSslFile" | grep -q "extra-ca 200 true"; then
+        ok "tls-ssl-cert-file"
+    else
+        bad "tls-ssl-cert-file"
+        printf '%s\n' "$tlsSslFile" >&2
     fi
 else
     bad "tls-fixture"
