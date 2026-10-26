@@ -6,7 +6,8 @@ import core.stdc.string : memcpy, strcmp, strlen;
 import djs.bindings.quickjs;
 import djs.bindings.value;
 import djs.modules.cjs : cjsLoad, installCjs;
-import djs.modules.cjsnames : NameSet, collectCjsExportNames, nameSetFree;
+import djs.modules.cjsnames : NameSet, SpecSet, collectCjsExportData, nameSetFree,
+    specSetFree;
 import djs.modules.classify : ModuleKind, builtinAlias, classifyPath;
 import djs.modules.path : dirNameAlloc, hasSuffix, isAbsolutePath, pathJoin,
     neutraliseShebang, readFileAlloc, realPathAlloc, xstrdup;
@@ -324,7 +325,66 @@ private char* builtinModuleSource(const(char)* builtin) @nogc nothrow
     return b.finish();
 }
 
-private char* cjsModuleSource(const(char)* path, const(char)* src, size_t len) @nogc nothrow
+private enum int maxCjsReexportDepth = 32;
+
+// TypeScript and Node CJS barrels re-export with helpers such as
+// `__exportStar(require("./types"), exports)`. The named exports only exist
+// in the required module at runtime, so scan that module too (and its own
+// re-exports), bounded by depth and the current ancestry to tolerate cycles.
+private void collectCjsNames(Runtime* self, const(char)* path,
+                             const(char)* src, size_t len,
+                             NameSet* names,
+                             const(char)*[maxCjsReexportDepth] visited,
+                             size_t visitedCount, int depth) @nogc nothrow
+{
+    if (self is null || path is null || src is null || names is null)
+        return;
+    if (depth >= maxCjsReexportDepth || visitedCount >= visited.length)
+        return;
+    foreach (i; 0 .. visitedCount)
+        if (visited[i] !is null && strcmp(visited[i], path) == 0)
+            return;
+    visited[visitedCount] = path;
+
+    SpecSet specs;
+    collectCjsExportData(src, len, names, &specs);
+    if (specs.count == 0)
+    {
+        specSetFree(&specs);
+        return;
+    }
+
+    char* dir = dirNameAlloc(path);
+    if (dir is null)
+    {
+        specSetFree(&specs);
+        return;
+    }
+    foreach (i; 0 .. specs.count)
+    {
+        Resolved r = resolveSpec(self, specs.specs[i], dir, false);
+        if (r.err == 0 && r.kind == ModuleKind.cjs && r.path !is null)
+        {
+            char* sub = null;
+            size_t subLen = 0;
+            int err = 0;
+            if (readFileAlloc(r.path, &sub, &subLen, &err))
+            {
+                neutraliseShebang(sub, subLen);
+                collectCjsNames(self, r.path, sub, subLen, names, visited,
+                                visitedCount + 1, depth + 1);
+                free(sub);
+            }
+        }
+        if (r.path !is null)
+            free(r.path);
+    }
+    free(dir);
+    specSetFree(&specs);
+}
+
+private char* cjsModuleSource(Runtime* self, const(char)* path,
+                              const(char)* src, size_t len) @nogc nothrow
 {
     char* dir = dirNameAlloc(path);
     if (dir is null)
@@ -336,7 +396,8 @@ private char* cjsModuleSource(const(char)* path, const(char)* src, size_t len) @
     b.addEscaped(path);
     b.add("\");\nexport default __m;\n");
     NameSet names;
-    collectCjsExportNames(src, len, &names);
+    const(char)*[maxCjsReexportDepth] visited = void;
+    collectCjsNames(self, path, src, len, &names, visited, 0, 0);
     size_t anon = 0;
     for (size_t i = 0; i < names.count; ++i)
     {
@@ -633,7 +694,7 @@ private extern(C) JSModuleDef* esmLoadImpl(JSContext* ctx, const(char)* name,
     }
     else if (kind == ModuleKind.cjs)
     {
-        moduleSource = cjsModuleSource(name, src, len);
+        moduleSource = cjsModuleSource(self, name, src, len);
         free(src);
         src = null;
     }

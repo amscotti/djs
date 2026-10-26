@@ -1,0 +1,4 @@
+named equals tag 1 2
+tslib equals 3
+whole equals 1
+namespace object number

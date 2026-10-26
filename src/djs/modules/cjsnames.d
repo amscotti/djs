@@ -32,6 +32,16 @@ private struct Slot
     size_t index;
 }
 
+// Specifiers pulled out of TypeScript/Node re-export helpers. The scanner
+// itself is pure slice code; the facade generator resolves and scans these
+// targets recursively.
+struct SpecSet
+{
+    char*[] specs;
+    size_t count;
+    size_t capacity;
+}
+
 private bool isStart(char c) pure @safe @nogc nothrow
 {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$';
@@ -86,6 +96,49 @@ private @trusted bool growNames(ref NameSet set) @nogc nothrow
     set.names = grown[0 .. next];
     set.capacity = next;
     return true;
+}
+
+private @trusted bool growSpecs(ref SpecSet set) @nogc nothrow
+{
+    size_t next = set.capacity == 0 ? 4 : set.capacity * 2;
+    char** grown = cast(char**) realloc(set.specs.ptr, next * (char*).sizeof);
+    if (grown is null)
+        return false;
+    set.specs = grown[0 .. next];
+    set.capacity = next;
+    return true;
+}
+
+private @trusted void addSpec(ref SpecSet set, const(char)[] spec) @nogc nothrow
+{
+    if (spec.length == 0)
+        return;
+    // Re-export lists are tiny; a linear duplicate check keeps ordering stable
+    // and avoids pulling the NameSet hash implementation into this path.
+    foreach (i; 0 .. set.count)
+        if (storedName(set.specs[i]) == spec)
+            return;
+    if (set.count == set.capacity && !growSpecs(set))
+        return;
+    char* copy = allocName(spec);
+    if (copy is null)
+        return;
+    set.specs[set.count] = copy;
+    set.count += 1;
+}
+
+void specSetFree(ref SpecSet set) @trusted @nogc nothrow
+{
+    foreach (i; 0 .. set.count)
+        free(set.specs[i]);
+    free(set.specs.ptr);
+    set = SpecSet.init;
+}
+
+void specSetFree(SpecSet* set) @trusted @nogc nothrow
+{
+    if (set !is null)
+        specSetFree(*set);
 }
 
 private @trusted Slot[] allocSlots(size_t n) @nogc nothrow
@@ -255,6 +308,79 @@ private bool startsWith(const(char)[] s, size_t at, const(char)[] lit) pure @saf
     return at + lit.length <= s.length && s[at .. at + lit.length] == lit;
 }
 
+private bool isSpace(char c) pure @safe @nogc nothrow
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// Parse `require("spec")` at `at`. Returns the index after the closing paren
+// only when the call is a plain re-export source (not `require("x").prop` or
+// `require("x")()`), so a named value assignment is not mistaken for a
+// wholesale re-export. Adds the specifier to `specs` on success.
+private size_t requireSpecifierEnd(const(char)[] s, size_t at,
+                                   ref SpecSet specs) @safe @nogc nothrow
+{
+    if (!startsWith(s, at, "require"))
+        return 0;
+    size_t j = at + 7;
+    if (j < s.length && isPart(s[j]))
+        return 0;
+    while (j < s.length && isSpace(s[j]))
+        j += 1;
+    if (j >= s.length || s[j] != '(')
+        return 0;
+    j += 1;
+    while (j < s.length && isSpace(s[j]))
+        j += 1;
+    if (j >= s.length || (s[j] != '"' && s[j] != '\''))
+        return 0;
+    size_t quote = j;
+    size_t e = skipString(s, j);
+    if (e <= quote + 1 || e > s.length || (s[e - 1] != '"' && s[e - 1] != '\''))
+        return 0;
+    size_t k = e;
+    while (k < s.length && isSpace(s[k]))
+        k += 1;
+    if (k >= s.length || s[k] != ')')
+        return 0;
+    k += 1;
+    size_t after = k;
+    while (k < s.length && isSpace(s[k]))
+        k += 1;
+    if (k < s.length && (s[k] == '.' || s[k] == '[' || s[k] == '('))
+        return 0;
+    addSpec(specs, s[quote + 1 .. e - 1]);
+    return after;
+}
+
+// `__exportStar(require("x"), exports)` is TypeScript's emitted form for
+// `export * from "x"`. Also accept the tslib spelling
+// `(0, tslib.__exportStar)(require("x"), exports)` and `__export(require("x"))`.
+private size_t scanReexportCall(const(char)[] s, size_t at,
+                                ref SpecSet specs) @safe @nogc nothrow
+{
+    size_t j = at;
+    while (j < s.length && isPart(s[j]))
+        j += 1;
+    const(char)[] ident = s[at .. j];
+    if (ident != "__exportStar" && ident != "__export")
+        return 0;
+    while (j < s.length && isSpace(s[j]))
+        j += 1;
+    if (j < s.length && s[j] == ')')
+    {
+        j += 1;
+        while (j < s.length && isSpace(s[j]))
+            j += 1;
+    }
+    if (j >= s.length || s[j] != '(')
+        return 0;
+    j += 1;
+    while (j < s.length && isSpace(s[j]))
+        j += 1;
+    return requireSpecifierEnd(s, j, specs);
+}
+
 // Skip a quoted string starting at s[i]; returns the index after the closing
 // quote (or s.length when the string is unterminated).
 private size_t skipString(const(char)[] s, size_t i) pure @safe @nogc nothrow
@@ -347,7 +473,8 @@ private bool atPropertyStart(const(char)[] s, size_t j) pure @safe @nogc nothrow
     return false;
 }
 
-private void scanNames(const(char)[] s, ref NameSet set) @safe @nogc nothrow
+private void scanNames(const(char)[] s, ref NameSet set,
+                       SpecSet* reexports = null) @safe @nogc nothrow
 {
     enum Tok
     {
@@ -439,6 +566,16 @@ private void scanNames(const(char)[] s, ref NameSet set) @safe @nogc nothrow
             i += 1;
             continue;
         }
+        if (reexports !is null && c == '_' && (i == 0 || !isPart(s[i - 1])))
+        {
+            size_t end = scanReexportCall(s, i, *reexports);
+            if (end != 0)
+            {
+                i = end;
+                prev = Tok.value;
+                continue;
+            }
+        }
         if (startsWith(s, i, "exports."))
         {
             size_t j = i + 8;
@@ -483,6 +620,16 @@ private void scanNames(const(char)[] s, ref NameSet set) @safe @nogc nothrow
                 j += 1;
                 while (j < s.length && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n'))
                     j += 1;
+                if (reexports !is null)
+                {
+                    size_t end = requireSpecifierEnd(s, j, *reexports);
+                    if (end != 0)
+                    {
+                        i = end;
+                        prev = Tok.value;
+                        continue;
+                    }
+                }
                 if (j < s.length && s[j] == '{')
                 {
                     // Collect top-level shorthand/`key:` properties.
@@ -648,12 +795,19 @@ private void scanNames(const(char)[] s, ref NameSet set) @safe @nogc nothrow
     }
 }
 
-// Public boundary: the caller owns `src` for `len` bytes.
-void collectCjsExportNames(const(char)* src, size_t len, NameSet* set) @trusted @nogc nothrow
+// Public boundary: the caller owns `src` for `len` bytes. `specs` may be null
+// when the caller only wants direct names.
+void collectCjsExportData(const(char)* src, size_t len, NameSet* set,
+                          SpecSet* specs) @trusted @nogc nothrow
 {
     if (src is null || set is null)
         return;
-    scanNames(src[0 .. len], *set);
+    scanNames(src[0 .. len], *set, specs);
+}
+
+void collectCjsExportNames(const(char)* src, size_t len, NameSet* set) @trusted @nogc nothrow
+{
+    collectCjsExportData(src, len, set, null);
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +881,37 @@ private bool hasName(ref NameSet set, const(char)[] name) @safe @nogc nothrow
     assert(!hasName(set, "inRegex"));
     assert(!hasName(set, "class"));
     assert(set.count == 7, "unexpected names collected");
+    nameSetFree(set);
+}
+
+@trusted unittest
+{
+    // TypeScript emits __exportStar(require("x"), exports) for
+    // `export * from "x"`. The facade generator resolves these specifiers and
+    // scans the targets, so the scanner must report them without treating
+    // comments, strings, definitions or property accesses as re-exports.
+    static immutable string src = `
+        exports.local = 1;
+        __exportStar(require("./types"), exports);
+        __export(require('./other'));
+        (0, tslib.__exportStar)(require("./tslib"), exports);
+        module.exports = require("./whole");
+        module.exports = require("./named").value;
+        // __exportStar(require("./comment"), exports);
+        var text = "__exportStar(require('./string'), exports)";
+        function __exportStar(m, exports) {}
+        __exportStar(helper, exports);
+    `;
+    NameSet set;
+    SpecSet specs;
+    scanNames(src, set, &specs);
+    assert(hasName(set, "local"));
+    assert(specs.count == 4);
+    assert(storedName(specs.specs[0]) == "./types");
+    assert(storedName(specs.specs[1]) == "./other");
+    assert(storedName(specs.specs[2]) == "./tslib");
+    assert(storedName(specs.specs[3]) == "./whole");
+    specSetFree(&specs);
     nameSetFree(set);
 }
 

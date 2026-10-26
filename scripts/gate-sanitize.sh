@@ -35,7 +35,7 @@ fi
 cases=(hello fs_read fs_binary fs_buffers timers_clear microtasks microtask_throw
        rejection rejection_handled fatal_stops_callbacks throw timer_churn
        fs_meta fs_limits fs_write_gc rejection_late nul_path require_fs
-       cjs_cycle cjs_interop cjs_throw_twice require_bound esm_chain json_import
+       cjs_cycle cjs_reexports cjs_interop cjs_throw_twice require_bound esm_chain json_import
        json_proto dynamic_import root_escape buffer_basic path_module os_module
        immediate fs_cp_io builtin_new_modules meta_space fs_deep_rm memory_usage
        fs_promises_extra node_modules_test node_modules_import
