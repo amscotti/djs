@@ -34,7 +34,9 @@ if ! diff -u "$TMP/golden.sorted" "$TMP/out.sorted"; then
     echo "net-gate: output differs" >&2
     exit 1
 fi
-./djs -A --allow-net="127.0.0.1:$PORT" -e 'require("dns").lookup("localhost",(e,a,f)=>{ if(e||!a) process.exit(1); console.log("dns",a,f); })' >"$TMP/dns" 2>&1 || exit 1
+# gate-net uses the IPv4 loopback fixture; request family 4 explicitly so the
+# assertion is independent of the resolver's verbatim ordering.
+./djs -A --allow-net="127.0.0.1:$PORT" -e 'require("dns").lookup("localhost",{family:4},(e,a,f)=>{ if(e||!a) process.exit(1); console.log("dns",a,f); })' >"$TMP/dns" 2>&1 || exit 1
 grep -q "^dns 127.0.0.1 4$" "$TMP/dns" || { cat "$TMP/dns" >&2; exit 1; }
 printf 'net-gate ok %s\n' "$(date -u +%FT%TZ)" >> gates/net.txt
 echo "net-gate: ok"

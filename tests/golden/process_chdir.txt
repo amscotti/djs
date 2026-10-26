@@ -1,0 +1,6 @@
+chdir-returns true
+chdir-cwd true
+chdir-relative true
+chdir-missing ENOENT chdir -2
+chdir-type TypeError ERR_INVALID_ARG_TYPE
+chdir-restored true

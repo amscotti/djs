@@ -1450,12 +1450,48 @@
         return port;
     }
 
+    function invalidLookupOption(message) {
+        var e = new TypeError(message);
+        e.code = "ERR_INVALID_ARG_VALUE";
+        return e;
+    }
+
     var dnsModule = {
         lookup: function (host, options, cb) {
             if (typeof options === 'function') { cb = options; options = {}; }
+            if (typeof options === 'number') options = { family: options };
+            else if (options == null) options = {};
+            else if (typeof options !== 'object')
+                throw invalidLookupOption("The 'options' argument must be an object or an integer");
+            var family = options.family == null ? 0 : Number(options.family);
+            if (family !== 0 && family !== 4 && family !== 6)
+                throw invalidLookupOption("The property 'options.family' must be one of: 0, 4, 6. Received " + String(options.family));
+            var hints = options.hints == null ? 0 : Number(options.hints);
+            if (!Number.isInteger(hints) || hints < 0)
+                throw invalidLookupOption("The property 'options.hints' must be a non-negative integer");
+            var all = !!options.all;
+            var order = options.order || (options.verbatim === false ? 'ipv4first' : 'verbatim');
+            if (order !== 'verbatim' && order !== 'ipv4first' && order !== 'ipv6first')
+                throw invalidLookupOption("The property 'options.order' must be one of: 'verbatim', 'ipv4first', 'ipv6first'");
             try {
-                __djs.net.lookupStart(String(host), function (err, addr, family) {
-                    if (err) cb(err); else cb(null, addr, family);
+                __djs.net.lookupStart(String(host), family, hints, function (err, list) {
+                    if (err) { cb(err); return; }
+                    list = list || [];
+                    if (order !== 'verbatim') {
+                        var want = order === 'ipv4first' ? 4 : 6;
+                        list.sort(function (a, b) {
+                            var aw = a.family === want ? 0 : 1;
+                            var bw = b.family === want ? 0 : 1;
+                            return aw - bw;
+                        });
+                    }
+                    if (all) cb(null, list);
+                    else if (list.length > 0) cb(null, list[0].address, list[0].family);
+                    else {
+                        var e = new Error("getaddrinfo ENOTFOUND " + String(host));
+                        e.code = "ENOTFOUND";
+                        cb(e);
+                    }
                 });
             } catch (e) {
                 queueMicrotask(function () { cb(e); });
@@ -1532,10 +1568,13 @@
                     });
                 });
             },
-            lookup: function (host) {
+            lookup: function (host, options) {
+                var opts = typeof options === 'number' ? { family: options } : (options || {});
                 return new Promise(function (resolve, reject) {
-                    dnsModule.lookup(host, {}, function (err, addr, family) {
-                        if (err) reject(err); else resolve({ address: addr, family: family });
+                    dnsModule.lookup(host, opts, function (err, addr, family) {
+                        if (err) { reject(err); return; }
+                        if (opts.all) resolve(addr);
+                        else resolve({ address: addr, family: family });
                     });
                 });
             },

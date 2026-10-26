@@ -229,6 +229,7 @@
         argv: __djs.process.argv(),
         env: __djs.process.env(),
         cwd: function () { return __djs.process.cwd(); },
+        chdir: function (dir) { return __djs.process.chdir(dir); },
         exit: function (code) { __djs.process.exit(code === undefined ? 0 : code); },
         platform: __djs.process.platform(),
         arch: __djs.process.arch(),

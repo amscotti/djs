@@ -291,6 +291,45 @@ private char* canonicalAllocRaw(const(char)* path) @nogc nothrow
 // Async fs workers re-verify the fd they open against this pair, closing
 // the check-to-open TOCTOU window where a script swaps the leaf for a
 // symlink between the check and the worker's open().
+// Resolve relative read/write rules against the current working directory.
+// The rule matcher canonicalizes at check time, so a process.chdir() without
+// this would silently move a grant like --allow-read=./data to the new cwd.
+// Called before chdir; failure is fail-closed (the chdir is refused).
+bool permissionAbsolutizePathRules() @nogc nothrow
+{
+    char* cwd = null;
+    foreach (ref r; rules[0 .. ruleCount])
+    {
+        if (r.value is null || r.value[0] == 0 || r.value[0] == '/')
+            continue;
+        if ((r.perm & (Perm.read | Perm.write)) == 0)
+            continue;
+        if (cwd is null)
+        {
+            cwd = getcwd(null, 0);
+            if (cwd is null)
+                return false;
+        }
+        char* joined = pathJoin(cwd, r.value);
+        if (joined is null)
+        {
+            free(cwd);
+            return false;
+        }
+        char* canon = canonicalAlloc(joined);
+        free(joined);
+        if (canon is null)
+        {
+            free(cwd);
+            return false;
+        }
+        free(r.value);
+        r.value = canon;
+    }
+    free(cwd);
+    return true;
+}
+
 bool permissionPathIdentity(const(char)* path, long* dev, long* ino) @nogc nothrow
 {
     char* canon = canonicalAlloc(path);

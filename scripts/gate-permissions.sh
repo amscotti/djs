@@ -311,6 +311,19 @@ expect_contains "run-ld-preload-unscoped-ok" "ran" \
 expect_contains "run-scoped-plain-env-ok" "ran" \
     --allow-run=sh -e "const {spawn}=require('child_process'); const c=spawn('sh',['-c','echo ran'],{env:{FOO:'1'}}); let o=''; c.stdout.on('data',function(d){o+=d}); c.on('close',function(){console.log(o.trim())})"
 
+# 26. process.chdir must keep relative grants anchored to the directory they
+# were granted for; otherwise chdir would silently widen --allow-read=./data.
+mkdir -p "$TMP/chdir/a/data" "$TMP/chdir/b/data"
+printf 'A' > "$TMP/chdir/a/data/f.txt"
+printf 'B' > "$TMP/chdir/b/data/f.txt"
+chdirOut="$(cd "$TMP/chdir/a" && "$BIN" --allow-read=./data -e "const fs=require('fs');process.chdir('$TMP/chdir/b');let a,b;try{fs.readFileSync('$TMP/chdir/a/data/f.txt');a='ok'}catch(e){a=e.code}try{fs.readFileSync('$TMP/chdir/b/data/f.txt');b='ok'}catch(e){b=e.code}console.log(a,b)" 2>&1)"
+if [ "$chdirOut" = "ok ERR_ACCESS_DENIED" ]; then
+    echo "permissions: ok chdir-keeps-relative-grants"
+else
+    echo "permissions: FAIL chdir-keeps-relative-grants (got: $chdirOut)" >&2
+    fail=$((fail+1))
+fi
+
 if [[ $fail -ne 0 ]]; then
     echo "permissions: $fail check(s) failed" >&2
     exit 1

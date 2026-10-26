@@ -8,14 +8,14 @@ import core.sys.posix.signal : SIGHUP, SIGINT, SIGQUIT, SIGKILL, SIGTERM, SIGUSR
 import core.sys.posix.time : timespec;
 import core.sys.posix.sys.resource : RUSAGE_SELF, getrusage, rusage;
 import core.sys.posix.sys.stat : umask;
-import core.sys.posix.unistd : getcwd, getpid, getppid;
+import core.sys.posix.unistd : chdir, getcwd, getpid, getppid;
 
 import djs.platform : CLOCK_MONOTONIC, Mode, clock_gettime, environPtr;
 
-import djs.loop.libuv : uv_resident_set_memory, uv_version_string;
+import djs.loop.libuv : uv_err_name, uv_resident_set_memory, uv_strerror, uv_translate_sys_error, uv_version_string;
 import djs.bindings.quickjs;
 import djs.bindings.value;
-import djs.permissions : Perm, permissionHas, permissionCheck, permissionFromName, permissionThrow, permissionsRevoke;
+import djs.permissions : Perm, permissionAbsolutizePathRules, permissionHas, permissionCheck, permissionFromName, permissionThrow, permissionsRevoke;
 import djs.runtime : Runtime, djsVersion, guarded, runtimeOf, runtimeRequestExit;
 
 extern(C) int uv_exepath(char* buffer, size_t* size) nothrow @nogc;
@@ -224,6 +224,52 @@ extern(C) JSValue jsProcessCwd(JSContext* ctx, JSValueConst thisVal, int argc,
                                JSValueConst* argv) nothrow @nogc
 {
     return guarded!jsProcessCwdImpl(ctx, thisVal, argc, argv);
+}
+
+private JSValue throwTypeErrorWithCode(JSContext* ctx, const(char)* msg,
+                                       const(char)* code) @nogc nothrow
+{
+    JS_ThrowTypeError(ctx, cast(const(char)*) "%s", msg);
+    JSValue e = JS_GetException(ctx);
+    if (jsIsException(e))
+        return e;
+    JS_SetPropertyStr(ctx, e, "code", newString(ctx, code));
+    return JS_Throw(ctx, e);
+}
+
+private extern(C) JSValue jsProcessChdirImpl(JSContext* ctx, JSValueConst, int argc,
+                                             JSValueConst* argv) nothrow @nogc
+{
+    if (argc < 1 || !jsIsString(argv[0]))
+        return throwTypeErrorWithCode(ctx, "The \"path\" argument must be of type string",
+                                      "ERR_INVALID_ARG_TYPE");
+    const(char)* path = null;
+    size_t len = 0;
+    if (!toStringView(ctx, argv[0], &path, &len))
+        return jsException();
+    // Relative grants must keep meaning the directory they were granted for.
+    if (!permissionAbsolutizePathRules())
+    {
+        JS_FreeCString(ctx, path);
+        return throwInternalError(ctx, "chdir: could not resolve permission rules");
+    }
+    if (chdir(path) != 0)
+    {
+        int e = errno;
+        int uvErr = uv_translate_sys_error(e);
+        JSValue err = makeError(ctx, uv_strerror(uvErr), uv_err_name(uvErr), path, "chdir");
+        if (!jsIsException(err))
+            JS_SetPropertyStr(ctx, err, "errno", jsInt(-e));
+        JS_FreeCString(ctx, path);
+        return throwError(ctx, err);
+    }
+    JS_FreeCString(ctx, path);
+    return jsUndefined();
+}
+extern(C) JSValue jsProcessChdir(JSContext* ctx, JSValueConst thisVal, int argc,
+                                 JSValueConst* argv) nothrow @nogc
+{
+    return guarded!jsProcessChdirImpl(ctx, thisVal, argc, argv);
 }
 
 private extern(C) JSValue jsProcessExitImpl(JSContext* ctx, JSValueConst, int argc,
@@ -586,6 +632,7 @@ bool installProcess(Runtime* self, JSValueConst djs) @nogc nothrow
     bool ok = addNativeFunction(ctx, obj, "argv", &jsProcessArgv, 0)
         && addNativeFunction(ctx, obj, "env", &jsProcessEnv, 0)
         && addNativeFunction(ctx, obj, "cwd", &jsProcessCwd, 0)
+        && addNativeFunction(ctx, obj, "chdir", &jsProcessChdir, 1)
         && addNativeFunction(ctx, obj, "exit", &jsProcessExit, 1)
         && addNativeFunction(ctx, obj, "platform", &jsProcessPlatform, 0)
         && addNativeFunction(ctx, obj, "arch", &jsProcessArch, 0)

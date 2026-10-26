@@ -497,46 +497,60 @@ private extern(C) void dnsCb(uv_getaddrinfo_t* req, int status, addrinfo* res) n
     }
     if (!d.connect)
     {
-        char[128] buf = void;
-        bool found = false;
-        int family = AF_INET;
-        // dns.lookup is deterministic for localhost: prefer an IPv4 answer
-        // when getaddrinfo supplies one, then fall back to IPv6.
-        for (int pass = 0; pass < 2 && !found; ++pass)
+        JSValue arr = JS_NewArray(ctx);
+        if (jsIsException(arr))
         {
-            for (addrinfo* ai = res; ai !is null; ai = ai.ai_next)
+            uv_freeaddrinfo(res);
+            dnsFree(d);
+            return;
+        }
+        uint count = 0;
+        for (addrinfo* ai = res; ai !is null; ai = ai.ai_next)
+        {
+            if (ai.ai_addr is null) continue;
+            char[128] buf = void;
+            if (ai.ai_family == AF_INET)
             {
-                if (ai.ai_addr is null) continue;
-                if (pass == 0 && ai.ai_family == AF_INET)
-                {
-                    sockaddr_in* sa = cast(sockaddr_in*) ai.ai_addr;
-                    if (inet_ntop(AF_INET, &sa.sin_addr, buf.ptr, buf.length) is null) continue;
-                    found = true;
-                    family = AF_INET;
-                    break;
-                }
-                if (pass == 1 && ai.ai_family == AF_INET6)
-                {
-                    sockaddr_in6* s6 = cast(sockaddr_in6*) ai.ai_addr;
-                    if (inet_ntop(AF_INET6, &s6.sin6_addr, buf.ptr, buf.length) is null) continue;
-                    found = true;
-                    family = AF_INET6;
-                    break;
-                }
+                sockaddr_in* sa = cast(sockaddr_in*) ai.ai_addr;
+                if (inet_ntop(AF_INET, &sa.sin_addr, buf.ptr, buf.length) is null) continue;
             }
+            else if (ai.ai_family == AF_INET6)
+            {
+                sockaddr_in6* s6 = cast(sockaddr_in6*) ai.ai_addr;
+                if (inet_ntop(AF_INET6, &s6.sin6_addr, buf.ptr, buf.length) is null) continue;
+            }
+            else
+                continue;
+            JSValue obj = JS_NewObject(ctx);
+            if (jsIsException(obj))
+            {
+                JS_FreeValue(ctx, arr);
+                uv_freeaddrinfo(res);
+                dnsFree(d);
+                return;
+            }
+            setProp(ctx, obj, "address", JS_NewStringLen(ctx, buf.ptr, strlen(buf.ptr)));
+            setProp(ctx, obj, "family", jsInt(ai.ai_family == AF_INET6 ? 6 : 4));
+            if (!setIndex(ctx, arr, count, obj))
+            {
+                JS_FreeValue(ctx, arr);
+                uv_freeaddrinfo(res);
+                dnsFree(d);
+                return;
+            }
+            count += 1;
         }
         uv_freeaddrinfo(res);
-        if (!found)
+        if (count == 0)
         {
+            JS_FreeValue(ctx, arr);
             dnsFail(d, -1, 0);
             return;
         }
         JSValue err = jsNull();
-        JSValue addr = JS_NewStringLen(ctx, buf.ptr, strlen(buf.ptr));
-        JSValue fam = jsInt(family == AF_INET6 ? 6 : 4);
-        JSValue[3] argv = [err, addr, fam];
-        callSlot(rt, d.cb, 3, argv.ptr, true);
-        JS_FreeValue(ctx, addr);
+        JSValue[2] argv = [err, arr];
+        callSlot(rt, d.cb, 2, argv.ptr, true);
+        JS_FreeValue(ctx, arr);
         dnsFree(d);
         return;
     }
@@ -621,7 +635,8 @@ private extern(C) void dnsCb(uv_getaddrinfo_t* req, int status, addrinfo* res) n
 }
 
 private JSValue startDns(JSContext* ctx, Runtime* rt, const(char)* host, int port,
-                         JSValueConst callback, bool connectMode, int resolveMode = 0) @nogc nothrow
+                         JSValueConst callback, bool connectMode, int resolveMode = 0,
+                         int family = 0, int hints = 0) @nogc nothrow
 {
     DnsReq* d = cast(DnsReq*) calloc(1, DnsReq.sizeof);
     if (d is null)
@@ -636,8 +651,10 @@ private JSValue startDns(JSContext* ctx, Runtime* rt, const(char)* host, int por
     memcpy(d.node, host, hl);
     d.node[hl] = 0;
     d.hints = addrinfo.init;
-    d.hints.ai_family = resolveMode == 4 ? AF_INET : resolveMode == 6 ? AF_INET6 : AF_UNSPEC;
+    d.hints.ai_family = resolveMode == 4 ? AF_INET : resolveMode == 6 ? AF_INET6 :
+                        family == 4 ? AF_INET : family == 6 ? AF_INET6 : AF_UNSPEC;
     d.hints.ai_socktype = SOCK_STREAM;
+    d.hints.ai_flags = hints;
     d.req = cast(uv_getaddrinfo_t*) malloc(uv_req_size(UV_GETADDRINFO));
     if (d.req is null) { dnsFree(d); return throwInternalError(ctx, "out of memory"); }
     d.cb = registryAdd(ctx, &rt.registry, callback, null);
@@ -808,8 +825,26 @@ extern(C) JSValue jsNetResolveStart(JSContext* ctx, JSValueConst thisVal, int ar
 private extern(C) JSValue jsNetLookupStartImpl(JSContext* ctx, JSValueConst, int argc,
                                               JSValueConst* argv) nothrow @nogc
 {
-    if (argc < 2 || !jsIsString(argv[0]) || !JS_IsFunction(ctx, argv[1]))
-        return throwTypeError(ctx, "lookup requires (host, callback)");
+    // (host, family, hints, callback); the old two-argument form is kept for
+    // internal callers/tests.
+    int cbIndex = argc >= 4 ? 3 : 1;
+    if (argc < 2 || !jsIsString(argv[0]) || !JS_IsFunction(ctx, argv[cbIndex]))
+        return throwTypeError(ctx, "lookup requires (host, family, hints, callback)");
+    int family = 0, hints = 0;
+    if (argc >= 4)
+    {
+        if (!toInt32(ctx, argv[1], &family))
+            return throwTypeError(ctx, "lookup family must be a number");
+        if (family != 0 && family != 4 && family != 6)
+        {
+            JSValue e = makeError(ctx,
+                "The property 'options.family' must be one of: 0, 4, 6",
+                "ERR_INVALID_ARG_VALUE", null, null);
+            return throwError(ctx, e);
+        }
+        if (!toInt32(ctx, argv[2], &hints) || hints < 0)
+            return throwTypeError(ctx, "lookup hints must be a non-negative number");
+    }
     const(char)* host = null;
     size_t len = 0;
     if (!toStringView(ctx, argv[0], &host, &len))
@@ -821,7 +856,7 @@ private extern(C) JSValue jsNetLookupStartImpl(JSContext* ctx, JSValueConst, int
         return e;
     }
     Runtime* rt = runtimeOf(ctx);
-    JSValue r = startDns(ctx, rt, host, 0, argv[1], false);
+    JSValue r = startDns(ctx, rt, host, 0, argv[cbIndex], false, 0, family, hints);
     JS_FreeCString(ctx, host);
     return r;
 }
