@@ -72,9 +72,9 @@ expect_contains "symlink-readlink" "file.txt" \
 
 # 4c. Numeric flags and fd ownership cannot widen a grant.
 expect_contains "flags-trunc-denied" "PermissionDenied ERR_ACCESS_DENIED" \
-    --allow-read="$TMP/allowed" -e "try{require('fs').openSync('$TMP/allowed/file.txt',512)}catch(e){console.log(e.name,e.code)}"
+    --allow-read="$TMP/allowed" -e "const f=require('fs');try{f.openSync('$TMP/allowed/file.txt',f.constants.O_TRUNC)}catch(e){console.log(e.name,e.code)}"
 expect_contains "flags-create-denied" "PermissionDenied ERR_ACCESS_DENIED" \
-    --allow-read="$TMP/allowed" -e "try{require('fs').openSync('$TMP/allowed/new2',64)}catch(e){console.log(e.name,e.code)}"
+    --allow-read="$TMP/allowed" -e "const f=require('fs');try{f.openSync('$TMP/allowed/new2',f.constants.O_CREAT)}catch(e){console.log(e.name,e.code)}"
 expect_contains "fd-ownership" "EBADF" \
     -e "try{require('fs').closeSync(3)}catch(e){console.log(e.code)}"
 expect_contains "dangling-symlink-denied" "PermissionDenied ERR_ACCESS_DENIED" \

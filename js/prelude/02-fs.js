@@ -414,7 +414,11 @@
         __djs.fs.renameStart(from, to, function (err) { callback(err || null); });
     }
 
-    var COPYFILE_EXCL = 1;
+    // These numeric values are passed straight to open(2), so they must match
+    // the host's <fcntl.h>/<copyfile.h>. Darwin's flag encoding differs from
+    // Linux's (O_CREAT is 512, not 64; O_CLOEXEC is 0x01000000).
+    var IS_DARWIN = __djs.process.platform() === 'darwin';
+    var COPYFILE_EXCL = IS_DARWIN ? 131072 : 1;
 
     function copyFileSync(src, dest, flags) {
         __djs.fs.copyFileSync(src, dest, !!((flags || 0) & COPYFILE_EXCL));
@@ -664,8 +668,12 @@
             COPYFILE_EXCL: COPYFILE_EXCL,
             F_OK: 0, R_OK: 4, W_OK: 2, X_OK: 1,
             O_RDONLY: 0, O_WRONLY: 1, O_RDWR: 2,
-            O_CREAT: 64, O_EXCL: 128, O_TRUNC: 512, O_APPEND: 1024,
-            O_NOFOLLOW: 131072, O_CLOEXEC: 524288
+            O_CREAT: IS_DARWIN ? 512 : 64,
+            O_EXCL: IS_DARWIN ? 2048 : 128,
+            O_TRUNC: IS_DARWIN ? 1024 : 512,
+            O_APPEND: IS_DARWIN ? 8 : 1024,
+            O_NOFOLLOW: IS_DARWIN ? 256 : 131072,
+            O_CLOEXEC: IS_DARWIN ? 16777216 : 524288
         },
         promises: fsPromises
     };

@@ -6,7 +6,7 @@ console.log("read", fs.readFileSync(dir + "/a/one.txt", "utf8"), fs.readFileSync
 
 fs.copyFileSync(dir + "/a/one.txt", dir + "/a/two.txt");
 console.log("copy", fs.readFileSync(dir + "/a/two.txt", "utf8"));
-try { fs.copyFileSync(dir + "/a/one.txt", dir + "/a/two.txt", 1); console.log("excl-missing"); }
+try { fs.copyFileSync(dir + "/a/one.txt", dir + "/a/two.txt", fs.constants.COPYFILE_EXCL); console.log("excl-missing"); }
 catch (e) { console.log("excl", e.code); }
 
 fs.renameSync(dir + "/a/two.txt", dir + "/a/three.txt");
