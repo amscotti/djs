@@ -41,6 +41,12 @@ cp -p docs/COMPAT.md docs/BENCHMARKS.md docs/PINS.md docs/ROADMAP.md "$STAGE/doc
 if [ "$OS" = macos ]; then
     BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
     mkdir -p "$STAGE/lib" "$STAGE/licenses"
+    # Map staged basename -> source path. Two different Homebrew dylibs
+    # sharing a basename would silently substitute the wrong binary; make
+    # that loud instead. Lives outside the stage so it is never packaged.
+    SRCMAP="$ROOT/dist/.bundle-map"
+    rm -rf "$SRCMAP"
+    mkdir -p "$SRCMAP"
 
     resolve_dep() {
         local dep="$1" base
@@ -69,7 +75,24 @@ if [ "$OS" = macos ]; then
                 exit 1
             fi
             base="$(basename "$dep")"
+            # Compare resolved paths: Homebrew records both the /opt symlink
+            # and the Cellar target for the same dylib, which is fine. A real
+            # that IS the staged copy (@rpath resolution) is the same file by
+            # construction and skips the check.
+            realPath="$(realpath "$real" 2>/dev/null || printf '%s' "$real")"
+            case "$realPath" in
+                "$STAGE"/*) ;;
+                *)
+                    if [ -f "$SRCMAP/$base" ] && [ "$(cat "$SRCMAP/$base")" != "$realPath" ]; then
+                        echo "package: dylib basename collision: $base from both" \
+                            "$(cat "$SRCMAP/$base")" and "$realPath" >&2
+                        exit 1
+                    fi
+                    printf '%s\n' "$realPath" > "$SRCMAP/$base"
+                    ;;
+            esac
             if [ ! -f "$STAGE/lib/$base" ]; then
+                printf '%s\n' "$realPath" > "$SRCMAP/$base"
                 cp -L "$real" "$STAGE/lib/$base"
                 chmod u+w "$STAGE/lib/$base"
                 install_name_tool -id "@executable_path/lib/$base" "$STAGE/lib/$base"
@@ -108,6 +131,7 @@ if [ "$OS" = macos ]; then
     license_copy "openssl@3" "openssl-LICENSE.txt"
     license_copy "brotli" "brotli-LICENSE"
     license_copy "libuv" "libuv-LICENSE"
+    rm -rf "$SRCMAP"
 fi
 
 # GNU tar can pin timestamps and ordering, so the same commit produces the same
