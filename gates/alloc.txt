@@ -120,3 +120,6 @@ gate-alloc ok 2026-10-26T02:47:18Z gc_alloc_delta=0 cycles=1000
 gate-alloc ok 2026-10-26T02:47:19Z gc_alloc_delta=0 cycles=1000
 gate-alloc ok 2026-10-26T12:51:06Z gc_alloc_delta=0 cycles=1000
 gate-alloc ok 2026-10-26T12:51:07Z gc_alloc_delta=0 cycles=1000
+gate-alloc ok 2026-10-26T16:16:09Z gc_alloc_delta=0 cycles=1000
+gate-alloc ok 2026-10-26T16:23:45Z gc_alloc_delta=0 cycles=1000
+gate-alloc ok 2026-10-26T16:23:46Z gc_alloc_delta=0 cycles=1000
