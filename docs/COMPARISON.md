@@ -76,7 +76,7 @@ reference and `docs/COMPATIBILITY-SCORE.md` the per-module scorecard.
 | `stream` core + `pipe`/`pipeline`/`finished` | yes | partial | `toWeb`/`fromWeb`, `addAbortSignal`, `stream/consumers`; object-mode edges still thin |
 | `events` | yes | partial | `on()` async iterator, `once`, `captureRejections`; no max-listener warnings |
 | `readline` | yes | partial | line/close/question; `readline/promises`; no terminal editing/history |
-| `vm`, `perf_hooks`, `diagnostics_channel`, `trace_events` | yes | partial | `vm` Script/contexts; perf marks/measures; diagnostics channels; inert tracing; no async_hooks/inspector |
+| `vm`, `perf_hooks`, `diagnostics_channel`, `trace_events` | yes | partial | `vm` Script/contexts; perf marks/measures; diagnostics channels; inert tracing; async_hooks compatibility shim (AsyncResource; no async propagation); no inspector |
 | `assert`, `module`, `stream/promises` | yes | partial | assert methods + deep equality, createRequire/isBuiltin, promise pipeline/finished; no snapshots or Module internals |
 
 ## Frameworks

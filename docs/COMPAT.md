@@ -645,14 +645,35 @@ target the owning module and a rebuild is required.
   timeout, so `server.close()` does not wait on them.
 - `Readable.toWeb` honours Web Streams backpressure.
 
-## Async context (not available)
+## Async context (compatibility shim)
 
-`async_hooks`/`AsyncLocalStorage` are **not implemented**. QuickJS-ng's promise
-hook only carries a parent for `.then`; async functions resume without one, so
-context cannot survive `await` without engine-level async-context support. A
-promise-hook shim lost context and its fallback segfaulted, so it was removed.
-`require("async_hooks")` remains unavailable until the engine provides async
-context. This is a deliberate compatibility limit, not a pending bug.
+`async_hooks` is available as a runtime shim, not true async context:
+
+- `AsyncResource` supports construction, `runInAsyncScope`, `asyncId`,
+  `triggerAsyncId`, `emitDestroy` and `bind`. Callbacks run correctly; they do
+  not carry a QuickJS async context.
+- `AsyncLocalStorage` implements `run`, `exit`, `getStore`, `enterWith`,
+  `disable` and the static helpers synchronously. A store set in `run()` is
+  restored when the callback returns, so **it does not survive an `await`**.
+  `createHook()` returns a no-op hook and `executionAsyncId()` is 0.
+- This exists because libraries such as undici only need
+  `AsyncResource.runInAsyncScope`; undici 7.x and the HN CLI application run
+  unchanged. Code that relies on request-scoped `AsyncLocalStorage` across
+  await boundaries will see `undefined` and should not use this runtime for
+  that pattern until QuickJS-ng provides async-context propagation.
+
+Additional compatibility surfaces added for undici and similar packages:
+
+- `node:util/types` exposes the `util.types` predicates, including
+  `isArrayBuffer`, `isUint8Array`, `isTypedArray` and `isDataView`.
+- `node:console` exports `Console` (writes to a supplied stream; `table()` is
+  a compact JSON rendering) plus the global console methods.
+- `node:sqlite` loads, but `DatabaseSync`/`StatementSync` throw
+  `ERR_SQLITE_UNSUPPORTED`; undici's optional SQLite cache store is therefore
+  unavailable while basic undici use works.
+- `Event`, `EventTarget`, `MessagePort` and `MessageChannel` globals provide
+  the shape WebIDL-based libraries reference at load; worker execution is
+  still unsupported, and `worker_threads` remains single-threaded.
 
 ## Real-library compatibility (v0.14.1)
 

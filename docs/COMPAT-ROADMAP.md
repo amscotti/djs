@@ -77,9 +77,11 @@ That blocks database drivers and binary protocols far more than missing
    (`duplex: "half"`), multipart encoding. Blocks: OpenAI file APIs, `undici`
    uploads, SDKs that post files. Effort **M**.
 8. **`async_hooks` / `AsyncLocalStorage` / `AsyncResource`** — request-scoped
-   context across promises. Blocks: Fastify request-context, NestJS, OpenTelemetry
-   instrumentation, structured logging. Effort **L** (needs promise-context
-   propagation; may need engine hooks).
+   context across promises. A loader-compatibility shim landed: `AsyncResource`
+   works and undici runs, while `AsyncLocalStorage` is synchronous-only.
+   True context across `await` remains **L** (needs promise-context
+   propagation; may need engine hooks) and still blocks Fastify request-context,
+   NestJS, OpenTelemetry instrumentation and structured logging.
 9. **DNS breadth** — `resolveMx`/`Txt`/`Srv`/`Cname`/`Ns`/`Soa`/`Reverse` plus
    `dns.promises`. Blocks: `mongodb+srv`, `nodemailer`, service discovery.
    Effort **S–M**.

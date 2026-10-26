@@ -25,6 +25,11 @@ gate suite, and the integration tests noted below — not an automated API diff.
 - 23 full (≥0.8), 9 substantial (0.6–0.8), 8 partial (0.3–0.6), 3 absent
   (`async_hooks`, `wasi`, `repl`)
 
+Note: scores above are the pre-shim snapshot. `async_hooks` now has a
+loader-compatibility shim (`AsyncResource`; `AsyncLocalStorage` is
+synchronous-only) used by undici; the score is not recomputed because the shim
+does not provide async-context propagation.
+
 ## Per-module
 
 - fs 0.90 · path 1.0 · url 0.95 · http 0.80 · https 0.85 · net 0.75
