@@ -37,8 +37,9 @@ files, and making HTTP requests. Day-to-day CLI workloads are the scenario that
 gets tested first; server frameworks and build tooling are best-effort.
 
 Known hard limits today: no native addons (N-API), no `Intl`, no WASM, no
-inspector, no `async_hooks`/`AsyncLocalStorage`, no socket pooling in
-`http.Agent`, and interactive raw-mode input degrades to line buffering.
+inspector, no true async-context propagation across `await` (`async_hooks`/
+`AsyncLocalStorage` are compatibility shims), and interactive raw-mode input
+degrades to line buffering.
 
 ## Permissions
 

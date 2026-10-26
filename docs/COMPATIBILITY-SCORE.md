@@ -96,5 +96,7 @@ score as missing. The table is not re-scored line by line; the honest summary is
 | `stream` | `Readable.setEncoding` |
 | resolver | top-level-only `package.json` keys (`type`, `main`) |
 
-Still absent and unchanged: `async_hooks`/`AsyncLocalStorage`, N-API, `Intl`,
-WASM, inspector, `require(esm)`, hoisted monorepo resolution, socket pooling.
+Still absent and unchanged: true async-context propagation
+(`async_hooks`/`AsyncLocalStorage` remain compatibility shims), N-API, `Intl`,
+WASM, inspector, `require(esm)` and hoisted monorepo resolution. HTTP client
+keep-alive pooling is now implemented for `http`/`https`/`fetch`.

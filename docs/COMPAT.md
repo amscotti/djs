@@ -96,11 +96,17 @@ were audited against Node and fixed:
 array-valued headers are serialised as repeated lines. Client responses keep
 repeated `Set-Cookie` as an array.
 
-Deliberate limits: the agent does not pool sockets — every request still dials a
-new connection and sends `Connection: close`. `agent.createConnection` *is*
-honoured, which is the hook proxy agents subclass. `setTimeout` emits `'timeout'`
-but does not destroy the socket; the timeout is cleared when the response
-completes or the request is destroyed.
+Client keep-alive is implemented. `http.globalAgent` and `https.globalAgent`
+start with keep-alive enabled, a 128-socket per-origin cap and a 4 s idle
+timeout; `new http.Agent()` keeps Node's default (no keep-alive). Requests above
+the cap queue and are handed a socket as one frees. Fetch uses the global agent
+for its scheme, so concurrent fetches and follow-up requests reuse connections.
+Explicit `Connection: close`, close-delimited bodies, upgrades and requests with
+custom CA/certificate material are never pooled. Idle sockets are unref'd, so a
+pooled connection cannot keep the process alive. `agent.createConnection` *is*
+honoured, which is the hook proxy agents subclass. `setTimeout` emits
+`'timeout'` but does not destroy the socket; the timeout is cleared when the
+response completes or the request is destroyed.
 
 **http2.** `http2.constants` with the `HTTP2_HEADER_*`, `HTTP2_METHOD_*`,
 `HTTP2_ERROR_*`, `HTTP2_SETTINGS_*` and debug symbols.
@@ -403,17 +409,19 @@ following are the current platform differences:
   NAPTR — and `ENODATA` when the answer is empty. One deliberate divergence: if
   an ANY answer carries a CNAME, c-ares (and therefore Node) returns only that
   CNAME, while DJS reports every record in the answer.
-- `http` has a client and a server: keep-alive, pipelining, chunked request
-  bodies, HEAD, `Expect: 100-continue`, header and request deadlines, graceful
-  `close()` drain (v0.11.1) and an `upgrade` handoff for WebSocket (v0.13.7).
-  There are no redirects, proxies, trailers or request streaming
-  (`ClientRequest` buffers the body until `end()`), and the agent does not pool
-  sockets.
+- `http` has a client and a server: client keep-alive pooling with bounded
+  per-origin concurrency, server-side pipelining, chunked request bodies, HEAD,
+  `Expect: 100-continue`, header and request deadlines, graceful `close()` drain
+  (v0.11.1) and an `upgrade` handoff for WebSocket (v0.13.7). There are no
+  redirects, proxies, trailers or request streaming (`ClientRequest` buffers the
+  body until `end()`).
 - `fetch` supports `http://` and `https://`, does not follow redirects (a 302
   is returned as the response), accepts `AbortSignal`, follows no proxies and
   buffers the body but also exposes `Response.body` as a web stream (v0.13.2–4).
-  `Headers`, `Request`, `Response`, `FormData`, `Blob` and `File` exist; a
-  non-2xx status still resolves.
+  It uses the same keep-alive global agents as `http`/`https`; an undici-style
+  `dispatcher` option is ignored and pooling is supplied internally. `Headers`,
+  `Request`, `Response`, `FormData`, `Blob` and `File` exist; a non-2xx status
+  still resolves.
 - `https`, `tls.connect` and `fetch("https://…")` use OpenSSL with system or
   custom CA verification (see TLS and HTTPS below).
 - `--allow-net=host:port` gates `net.connect`, DNS lookups and `fetch`. Rules
@@ -941,12 +949,11 @@ Additional compatibility surfaces added for undici and similar packages:
   Accepted sockets are ordinary `net.Socket`s. There are 128 socket slots and
   8 listeners; stale socket ids are generation-tagged.
 - `http.createServer` parses HTTP/1.1 requests with a 16 KiB header limit and
-  an 8 MiB `content-length` body limit. Responses default to `Connection:
-  close`; `res.write` streams chunked, `res.end` sends `content-length` when
-  the body is small and no length was set. There is no keep-alive, no chunked
-  **request** body decoding, no `Expect: 100-continue`, no trailers, no
-  upgrade/WebSocket and no request/response timeouts. `https.createServer`
-  throws `ERR_TLS_SERVER_UNSUPPORTED`.
+  an 8 MiB `content-length` body limit. It supports server keep-alive and
+  pipelining, chunked request bodies, `Expect: 100-continue`, header/request
+  timeouts and a raw `upgrade` handoff for WebSocket. Responses use
+  `content-length` when sized up front and chunked otherwise. There are no
+  trailers. `https.createServer` accepts `cert`/`key` and serves TLS.
 - `dgram.createSocket('udp4')` supports `bind`, `send`, `address`, `close` and
   `message` events. Both bind and send are gated by the `net` permission with
   `host:port`. IPv4 only; no multicast, broadcast or `setTTL` options.
@@ -980,8 +987,18 @@ Additional compatibility surfaces added for undici and similar packages:
   when no SAN of the host's family exists. Minimum protocol is TLS 1.2; SNI is
   sent for DNS names but not IP literals.
 - `https.request`/`https.get` and `fetch(https://...)` use the same transport.
+  An options object passed to `https.request`/`https.get` implies `https:`
+  (and port 443) like Node, and `new https.Agent()` defaults to the TLS scheme.
   `fetch` accepts the non-standard `rejectUnauthorized: false` option for
   local/self-signed testing.
+- TLS uses a 256-entry live-socket table for clients and servers. Client
+  handshakes that finish while every slot is busy queue until a socket closes,
+  rather than failing with `ERR_TLS_EXHAUSTED`; inbound accepts beyond the
+  table are still rejected.
+- TLS handshakes block a libuv worker thread while DNS/TCP/SSL are established.
+  DJS sets `UV_THREADPOOL_SIZE=32` before libuv initialises unless the
+  environment already provides a value; this is the concurrency used by client
+  bursts. An explicit `UV_THREADPOOL_SIZE` still wins.
 - The TLS **server** does not verify client certificates and does not select
   ALPN, so mutual TLS and HTTP/2 over TLS are not complete. There is no session
   resumption or ticket control, and no

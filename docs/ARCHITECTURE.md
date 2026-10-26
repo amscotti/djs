@@ -349,6 +349,15 @@ handshake on a worker thread and reads/writes on `uv_poll`; HTTP/1.1, HTTP/2,
 WebSocket, `http` and `fetch` are layered over these transports (see
 `docs/COMPAT.md` for the exact surface).
 
+The TLS table holds 256 live sockets. When a client handshake completes and
+every slot is busy, the connection waits in a FIFO queue until a socket closes;
+client callers never see `ERR_TLS_EXHAUSTED` for a normal burst. Because the
+handshake blocks a worker, `main` sets `UV_THREADPOOL_SIZE=32` before libuv
+initialises the pool unless the environment already specifies one. Client
+keep-alive pooling then keeps the number of handshakes proportional to the
+per-origin cap (128 for the global agents), not the request count; idle
+connections are unref'd. See §9.4 for the fs side of the same pool.
+
 ## 10. Error handling, exit, and teardown
 
 **Boundary errors.** Tier A implementations throw JS exceptions directly with the helpers above. Every **JS-callable** entry point runs inside `guarded` (`runtime.d`), which catches `Throwable`, prints `djs: internal error`, and exits 70, so a D exception never unwinds into QuickJS. Internal libuv callbacks (`onTimer`, `onPrepare`, `onIdle`, `fsAfterCb`, the rejection tracker) are plain `@nogc nothrow` code that only frees memory and enqueues work; they are not wrapped, and adding allocating or asserting code there requires adding a guard first. Nothing may unwind into C either way.

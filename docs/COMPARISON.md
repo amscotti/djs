@@ -53,7 +53,7 @@ reference and `docs/COMPATIBILITY-SCORE.md` the per-module scorecard.
 |---|---|---|---|
 | `net` TCP client/server | yes | partial | IPv4 + IPv6 literals; 128 sockets, 8 listeners |
 | `dns` | yes | partial | `lookup`, `lookupService`, `reverse`, `resolveAny`, `setServers`/`getServers`, and `resolve` plus the A/AAAA/MX/TXT/SRV/CNAME/NS/PTR/SOA record types; no `resolveNaptr`/`resolveCaa` methods (their types come back from `resolveAny`) and no TCP fallback |
-| `http` client | yes | yes | chunked responses, redirects not automatic |
+| `http` client | yes | yes | keep-alive pooling with a per-origin cap, chunked responses; redirects not automatic |
 | `http` server | yes | partial | request/response, keep-alive, chunked bodies, 100-continue, `upgrade` handoff |
 | `https` client / TLS | yes | yes | OpenSSL, system CA, SNI, TLS 1.2+ |
 | `https` server | yes | partial | PEM cert/key, mutual TLS via `caFile`/`requestCert`; no ALPN selection or HTTP-2 TLS |
