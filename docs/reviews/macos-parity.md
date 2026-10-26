@@ -1,8 +1,9 @@
 # macOS parity — research (no code changed)
 
-**Status:** research only. Nothing in `src/` was modified; all experiments ran
-on throwaway copies under `/tmp`, and the findings below are empirical unless
-marked "estimate".
+**Status:** research (T1–T3 now implemented on branch `macos-support`:
+platform shims, behavior fixes, and the `uv_fs_event` watch port §5 option A).
+The findings below are the original research; §5 documents the chosen backend.
+All experiments ran on throwaway copies under `/tmp`.
 
 **Environment:** macOS 26.6 (darwin25.6.0), Apple silicon (arm64).
 Toolchains tried: LDC 1.36.0 (mise, the Linux pin) and LDC 1.43.0 (Homebrew,

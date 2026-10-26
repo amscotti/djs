@@ -18,6 +18,7 @@ struct uv_idle_t;
 struct uv_work_t;
 struct uv_fs_t;
 struct uv_poll_t;
+struct uv_fs_event_t;
 struct uv_getaddrinfo_t;
 struct uv_getnameinfo_t;
 struct uv_signal_t;
@@ -29,6 +30,18 @@ alias uv_prepare_cb = extern(C) void function(uv_prepare_t* handle) nothrow @nog
 alias uv_idle_cb = extern(C) void function(uv_idle_t* handle) nothrow @nogc;
 alias uv_work_cb = extern(C) void function(uv_work_t* req) nothrow @nogc;
 alias uv_poll_cb = extern(C) void function(uv_poll_t* handle, int status, int events) nothrow @nogc;
+
+// fs events: libuv uses inotify on Linux and FSEvents (directories) or
+// kqueue (files) on macOS. `filename` is relative to the watched path and
+// may be null; `events` is a mask of UV_RENAME/UV_CHANGE.
+alias uv_fs_event_cb = extern(C) void function(uv_fs_event_t* handle,
+    const(char)* filename, int events, int status) nothrow @nogc;
+
+enum int UV_RENAME = 1;
+enum int UV_CHANGE = 2;
+enum int UV_FS_EVENT_WATCH_ENTRY = 1;
+enum int UV_FS_EVENT_STAT = 2;
+enum int UV_FS_EVENT_RECURSIVE = 4;
 alias uv_getaddrinfo_cb = extern(C) void function(uv_getaddrinfo_t* req, int status, addrinfo* res) nothrow @nogc;
 alias uv_getnameinfo_cb = extern(C) void function(uv_getnameinfo_t* req, int status,
                                                 const(char)* hostname,
@@ -121,6 +134,11 @@ void uv_freeaddrinfo(addrinfo* ai) nothrow @nogc;
 
 int uv_getnameinfo(uv_loop_t* loop, uv_getnameinfo_t* req, uv_getnameinfo_cb cb,
                    const(sockaddr)* addr, int flags) nothrow @nogc;
+
+int uv_fs_event_init(uv_loop_t* loop, uv_fs_event_t* handle) nothrow @nogc;
+int uv_fs_event_start(uv_fs_event_t* handle, uv_fs_event_cb cb,
+                      const(char)* path, int flags) nothrow @nogc;
+int uv_fs_event_stop(uv_fs_event_t* handle) nothrow @nogc;
 
 int uv_poll_init_socket(uv_loop_t* loop, uv_poll_t* handle, int socket) nothrow @nogc;
 int uv_poll_start(uv_poll_t* handle, int events, uv_poll_cb cb) nothrow @nogc;

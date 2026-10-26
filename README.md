@@ -101,9 +101,8 @@ do not apply. `--config=macos` links Homebrew's OpenSSL 3/Brotli/libuv instead
 of the Linux sonames; the release tarball therefore needs those Homebrew
 formulae at runtime.
 
-Known gaps on macOS: `fs.watch` is not implemented (it throws
-`ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`), `process.memoryUsage().rss` reports
-peak RSS (`getrusage`) rather than current, and the resolver does not read
+Known gaps on macOS: `process.memoryUsage().rss` reports peak RSS
+(`getrusage`) rather than current, and the resolver does not read
 `/etc/hosts`. `integration.sh`/`gate.sh` are Linux-only; the release workflow
 runs a build and smoke test on macOS, not the full suite.
 

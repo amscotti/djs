@@ -298,10 +298,13 @@ generating invalid syntax.
 The runtime builds and runs natively on macOS arm64 (`--config=macos`). The
 following are the current platform differences:
 
-- **`fs.watch` is not implemented on macOS.** It throws `Error` with
-  `code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` (the same code Node uses for
-  unsupported platform features). The Linux backend is inotify; a portable
-  libuv `uv_fs_event` backend (FSEvents on macOS) is the planned parity path.
+- **`fs.watch` uses libuv fs events** (`uv_fs_event`): inotify on Linux,
+  FSEvents for directories and kqueue for files on macOS. On macOS, FSEvents
+  coalesces and may report a write as `rename` before later reporting
+  `change` (Node inherits the same behaviour); FSEvents also replays recent
+  history, so a listener can see an event for the watched directory's own
+  creation. Recursive watching currently uses the prelude's per-directory
+  walk on both platforms.
 - **`process.memoryUsage().rss` reports peak RSS** (via `getrusage`) rather
   than current RSS; Linux reads `/proc/self/statm` for the current value.
 - **The resolver does not read `/etc/hosts`** on either platform; it queries

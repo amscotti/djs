@@ -1,0 +1,7 @@
+create-event true rename
+rename-event true
+delete-event true
+file-event true change
+file-name true
+close-silent true
+done

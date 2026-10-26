@@ -13,12 +13,6 @@ import core.sys.posix.sys.stat : S_ISBLK, S_ISCHR, S_ISDIR, S_ISFIFO, S_ISLNK, S
 import core.sys.posix.sys.types : off_t, ssize_t;
 import core.sys.posix.unistd : chown, close, fchown, fsync, ftruncate, link, pread, pwrite, read, readlink,
     rmdir, symlink, truncate, unlink, write;
-version (linux)
-{
-    import core.sys.linux.sys.inotify : IN_ATTRIB, IN_CLOEXEC, IN_CREATE, IN_DELETE, IN_DELETE_SELF,
-        IN_MODIFY, IN_MOVE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_NONBLOCK, inotify_add_watch,
-        inotify_init1, inotify_rm_watch;
-}
 
 import djs.bindings.quickjs;
 import djs.platform : Mode, O_CLOEXEC, fdatasync;
@@ -2483,18 +2477,20 @@ extern(C) JSValue jsOpenStart(JSContext* ctx, JSValueConst thisVal, int argc,
 { return guarded!jsOpenStartImpl(ctx, thisVal, argc, argv); }
 
 
-version (linux)
-{
-// ---- fs.watch (inotify) ---------------------------------------------------
+// ---- fs.watch (libuv fs events) -------------------------------------------
+//
+// One uv_fs_event handle per watcher: libuv uses inotify on Linux and
+// FSEvents (directories) or kqueue (files) on macOS. The JavaScript contract
+// is unchanged: the listener receives (eventType, filename) where eventType
+// is "change" for content changes and "rename" for create/delete/move.
+// libuv may report both in one event; rename wins, matching Node.
 
 private struct WatchSlot
 {
     bool used;
     bool closing;
     int id;
-    int fd;
-    int wd;
-    uv_poll_t* poll;
+    uv_fs_event_t* ev;
     Runtime* rt;
     ulong cb;
 }
@@ -2524,40 +2520,28 @@ private extern(C) void watchHandleClosed(uv_handle_t* h) nothrow @nogc
     WatchSlot* w = cast(WatchSlot*) uv_handle_get_data(h);
     if (w !is null)
     {
-        if (w.fd >= 0) close(w.fd);
-        if (w.wd >= 0 && w.fd >= 0) {}
-        w.fd = -1;
-        w.wd = -1;
+        w.ev = null;
         w.used = false;
         w.closing = false;
-        w.poll = null;
     }
     free(h);
 }
 
-private extern(C) void watchPollCb(uv_poll_t* h, int status, int) nothrow @nogc
+private extern(C) void watchEventCb(uv_fs_event_t* h, const(char)* filename,
+                                    int events, int status) nothrow @nogc
 {
     WatchSlot* w = cast(WatchSlot*) uv_handle_get_data(cast(uv_handle_t*) h);
-    if (w is null || !w.used || w.closing || status < 0) return;
-    ubyte[4096] buf = void;
-    ssize_t n = read(w.fd, buf.ptr, buf.length);
-    if (n <= 0) return;
-    size_t off = 0;
-    while (off + 16 <= cast(size_t) n)
-    {
-        uint mask = *cast(uint*) (buf.ptr + off + 4);
-        uint len = *cast(uint*) (buf.ptr + off + 12);
-        if (off + 16 + len > cast(size_t) n) break;
-        char* name = cast(char*) (buf.ptr + off + 16);
-        JSValue[2] argv = void;
-        const(char)* ev = (mask & (IN_MODIFY | IN_ATTRIB)) ? "change" : "rename";
-        argv[0] = JS_NewStringLen(w.rt.ctx, ev, strlen(ev));
-        argv[1] = name[0] ? JS_NewStringLen(w.rt.ctx, name, strlen(name)) : jsNull();
-        watchCall(w.rt, w.cb, 2, argv.ptr);
-        JS_FreeValue(w.rt.ctx, argv[0]);
-        if (!jsIsNull(argv[1])) JS_FreeValue(w.rt.ctx, argv[1]);
-        off += 16 + len;
-    }
+    if (w is null || !w.used || w.closing || status < 0)
+        return;
+    JSValue[2] argv = void;
+    const(char)* ev = (events & UV_RENAME) != 0 ? "rename" : "change";
+    argv[0] = JS_NewStringLen(w.rt.ctx, ev, strlen(ev));
+    argv[1] = (filename !is null && filename[0] != 0)
+        ? JS_NewStringLen(w.rt.ctx, filename, strlen(filename))
+        : jsNull();
+    watchCall(w.rt, w.cb, 2, argv.ptr);
+    JS_FreeValue(w.rt.ctx, argv[0]);
+    if (!jsIsNull(argv[1])) JS_FreeValue(w.rt.ctx, argv[1]);
 }
 
 private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) nothrow @nogc
@@ -2573,47 +2557,40 @@ private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int arg
     int slot = -1;
     foreach (i; 0 .. watches.length) if (!watches[i].used) { slot = cast(int) i; break; }
     if (slot < 0) return throwInternalError(ctx, "watch table exhausted");
-    int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-    if (fd < 0) return throwFsError(ctx, errno, path, "inotify_init1");
-    int wd = inotify_add_watch(fd, path, IN_CREATE | IN_DELETE | IN_MODIFY | IN_ATTRIB |
-                                        IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF);
-    if (wd < 0)
+
+    uv_fs_event_t* ev = cast(uv_fs_event_t*) malloc(uv_handle_size(UV_FS_EVENT));
+    if (ev is null) return throwInternalError(ctx, "out of memory");
+    int rc = uv_fs_event_init(rt.loop, ev);
+    if (rc != 0)
     {
-        int e = errno;
-        close(fd);
-        return throwFsError(ctx, e, path, "inotify_add_watch");
-    }
-    uv_poll_t* p = cast(uv_poll_t*) malloc(uv_handle_size(UV_POLL));
-    if (p is null || uv_poll_init_socket(rt.loop, p, fd) != 0)
-    {
-        if (p !is null) free(p);
-        inotify_rm_watch(fd, wd);
-        close(fd);
-        return throwInternalError(ctx, "watch poll init failed");
+        free(ev);
+        return throwInternalError(ctx, "watch init failed");
     }
     WatchSlot* w = &watches[slot];
     *w = WatchSlot.init;
     w.used = true;
     w.id = nextWatchId++;
     if (nextWatchId == 0) nextWatchId = 1;
-    w.fd = fd;
-    w.wd = wd;
-    w.poll = p;
+    w.ev = ev;
     w.rt = rt;
+    uv_handle_set_data(cast(uv_handle_t*) ev, w);
     ulong cb = registryAdd(ctx, &rt.registry, argv[1], null);
     if (cb == 0)
     {
-        // p is an initialized, loop-registered handle: raw free() would
-        // leave a dangling entry uv_loop_close walks into. Close it.
-        uv_close(cast(uv_handle_t*) p, &watchHandleClosed);
-        inotify_rm_watch(fd, wd);
-        close(fd);
-        w.used = false;
+        // The handle is initialized, so close it instead of free()ing it.
+        uv_close(cast(uv_handle_t*) ev, &watchHandleClosed);
         return throwInternalError(ctx, "callback registry exhausted");
     }
     w.cb = cb;
-    uv_handle_set_data(cast(uv_handle_t*) p, w);
-    uv_poll_start(p, UV_READABLE, &watchPollCb);
+    rc = uv_fs_event_start(ev, &watchEventCb, path, 0);
+    if (rc != 0)
+    {
+        registryRelease(ctx, &rt.registry, cb);
+        w.cb = 0;
+        uv_close(cast(uv_handle_t*) ev, &watchHandleClosed);
+        int sysErr = uv_translate_sys_error(rc);
+        return throwFsError(ctx, sysErr > 0 ? sysErr : EINVAL, path, "watch");
+    }
     return jsInt(w.id);
 }
 extern(C) JSValue jsWatchStart(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
@@ -2628,48 +2605,21 @@ private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int arg
         if (!w.used || w.id != id) continue;
         w.closing = true;
         if (w.cb != 0) { registryRelease(ctx, &w.rt.registry, w.cb); w.cb = 0; }
-        if (w.poll !is null)
+        if (w.ev !is null)
         {
-            uv_poll_stop(w.poll);
-            uv_close(cast(uv_handle_t*) w.poll, &watchHandleClosed);
+            // Safe from inside the event callback: libuv stops delivery and
+            // frees the handle through the close callback.
+            uv_fs_event_stop(w.ev);
+            uv_close(cast(uv_handle_t*) w.ev, &watchHandleClosed);
         }
-        else if (w.fd >= 0)
-        {
-            close(w.fd);
-            w.fd = -1;
+        else
             w.used = false;
-        }
         return jsUndefined();
     }
     return throwTypeError(ctx, "invalid watcher");
 }
 extern(C) JSValue jsWatchClose(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
 { return guarded!jsWatchCloseImpl(ctx, thisVal, argc, argv); }
-
-}
-else
-{
-    // fs.watch needs a native backend per platform (inotify on Linux,
-    // FSEvents/kqueue on Darwin). Until the Darwin backend lands, the
-    // surface throws the same code Node uses for platform gaps instead of
-    // exposing an inotify import that cannot compile.
-    private extern(C) JSValue jsWatchStartImpl(JSContext* ctx, JSValueConst, int, JSValueConst*) nothrow @nogc
-    {
-        return throwError(ctx, makeError(ctx,
-            "fs.watch is not supported on this platform yet",
-            "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM", null, "watch"));
-    }
-    extern(C) JSValue jsWatchStart(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
-    { return guarded!jsWatchStartImpl(ctx, thisVal, argc, argv); }
-
-    private extern(C) JSValue jsWatchCloseImpl(JSContext* ctx, JSValueConst, int, JSValueConst*) nothrow @nogc
-    {
-        // Nothing can have been started; keep close() a no-op.
-        return jsUndefined();
-    }
-    extern(C) JSValue jsWatchClose(JSContext* ctx, JSValueConst thisVal, int argc, JSValueConst* argv) nothrow @nogc
-    { return guarded!jsWatchCloseImpl(ctx, thisVal, argc, argv); }
-}
 
 bool installFs(Runtime* self, JSValueConst djs) @nogc nothrow
 {
